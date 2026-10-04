@@ -1,273 +1,564 @@
 #!/usr/bin/env python3
-"""GitHub Action: refresh data.json with the latest market data.
+"""OneChart data pipeline: backfill (first run) + daily refresh.
 
-Loads data.json (1Y daily + 10Y weekly + 15m intraday + news for 662 symbols),
-fetches new bars from Yahoo Finance since the last stored date,
-rolls the series forward (adjusted AND raw closes), refreshes news headlines,
-and saves data.json.
-Exits 0 quietly when there is no new trading data (weekends/holidays).
+Universe: all US-listed stocks/ETFs (NASDAQ Trader lists) + global indexes + BTC/ETH.
+Outputs (repo root):
+  universe.json              {asof, daily_days[366], weekly_weeks[523], cpi, tickers:{SYM:[name,class]}}
+  data/<urlquoted SYM>.json  {t,n,c,d,u,w,wu,ii,news,f}
+
+First run (no data/ dir or empty): full backfill of every ticker (slow, ~45 min).
+Daily runs: roll series forward, refresh news/fundamentals/CPI, update universe.
+Validation failure -> exit non-zero (the workflow then skips the push).
 """
-import json, os, sys, time, urllib.parse, urllib.request
+import json, os, re, sys, time, urllib.parse, urllib.request
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import requests
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(ROOT, 'data')
+UNI_PATH = os.path.join(ROOT, 'universe.json')
+
 UA = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'}
-ET = ZoneInfo('America/New_York')
+ET_Z = ZoneInfo('America/New_York')
 N_DAILY = 366
 TARGET_WEEKS = 523
 
+SPECIALS = {
+    '^GSPC': ('S&P 500', 'index'), '^IXIC': ('Nasdaq Composite', 'index'),
+    '^DJI': ('Dow Jones Industrial', 'index'), '^RUT': ('Russell 2000', 'index'),
+    '^VIX': ('VIX Volatility', 'index'), '^TNX': ('10-Yr Treasury Yield', 'index'),
+    '^FTSE': ('FTSE 100', 'index'), '^N225': ('Nikkei 225', 'index'),
+    '^GDAXI': ('DAX', 'index'), '^FCHI': ('CAC 40', 'index'),
+    '^HSI': ('Hang Seng', 'index'), '^STOXX50E': ('Euro Stoxx 50', 'index'),
+    'BTC-USD': ('Bitcoin', 'crypto'), 'ETH-USD': ('Ethereum', 'crypto'),
+}
+JUNK = re.compile(r'preferred|warrant|right[^s]|unit|debenture|note due', re.I)
+
+FUND_FIELDS = ('symbol,longName,trailingPE,forwardPE,epsTrailingTwelveMonths,epsForward,'
+               'dividendYield,trailingAnnualDividendYield,marketCap,beta,priceToBook')
+
+
+def log(*a):
+    print(*a, flush=True)
+
+
+def fname(sym):
+    return urllib.parse.quote(sym, safe='') + '.json'
+
+
+def sym_from_fname(fn):
+    return urllib.parse.unquote(fn[:-5]) if fn.endswith('.json') else None
+
+
+# ---------------- Yahoo ----------------
 def new_session():
     s = requests.Session()
     s.headers.update(UA)
     return s
 
+
 def refresh_crumb(s):
     s.get('https://fc.yahoo.com', timeout=30)
     return s.get('https://query1.finance.yahoo.com/v1/test/getcrumb', timeout=30).text.strip()
 
+
 def yahoo_chart(s, crumb, ticker, params):
     last_err = None
-    for _ in range(3):
+    for _ in range(4):
         try:
-            url = f'https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?{params}&crumb={urllib.parse.quote(crumb)}'
+            url = (f'https://query1.finance.yahoo.com/v8/finance/chart/{ticker}'
+                   f'?{params}&crumb={urllib.parse.quote(crumb)}')
             r = s.get(url, timeout=30)
             if r.status_code == 401:
-                last_err = '401 -> refreshing crumb'
+                last_err = '401'
                 crumb = refresh_crumb(s)
-                time.sleep(2)
+                time.sleep(3)
+                continue
+            if r.status_code == 429:
+                last_err = '429'
+                time.sleep(12)
                 continue
             r.raise_for_status()
             res = (r.json().get('chart') or {}).get('result')
             if not res:
                 last_err = 'no result'
-                time.sleep(1)
+                time.sleep(2)
                 continue
             return res[0], None, crumb
         except Exception as e:
-            last_err = repr(e)[:150]
-            time.sleep(2)
+            last_err = repr(e)[:120]
+            time.sleep(3)
     return None, last_err, crumb
 
-def main():
-    d = json.load(open('data.json'))
-    syms = d['symbols']
-    tickers = list(syms.keys())
-    last_date = d['daily_days'][-1]
-    today_et = datetime.now(ET).date()
 
-    # early exit when there is no new trading day (weekends/holidays)
-    lwd = today_et
-    while lwd.weekday() >= 5:
-        lwd -= timedelta(days=1)
-    print(f'data last date: {last_date}, today (ET): {today_et}', flush=True)
-    if last_date >= lwd.isoformat():
-        print('UP-TO-DATE: no new trading days', flush=True)
-        return 0
+# ---------------- universe ----------------
+def fetch_nasdaq_universe():
+    tickers = {}
+    for url, kind in (('https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt', 'n'),
+                      ('https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt', 'o')):
+        req = urllib.request.Request(url, headers=UA)
+        txt = urllib.request.urlopen(req, timeout=60).read().decode('utf-8', 'replace')
+        for line in txt.splitlines():
+            line = line.strip()
+            if not line or line.startswith('File Creation Time'):
+                continue
+            p = line.split('|')
+            if p[0] in ('Symbol', 'ACT Symbol'):
+                continue
+            try:
+                if kind == 'n':
+                    sym, name, test, etf = p[0], p[1], p[3], p[6] == 'Y'
+                else:
+                    sym, name, test, etf = p[0], p[1], p[6], p[4] == 'Y'
+            except IndexError:
+                continue
+            if test == 'Y' or not sym.strip():
+                continue
+            if JUNK.search(name):
+                continue
+            ysym = sym.strip().replace('.', '-')
+            if ysym in tickers:
+                continue
+            short = name.split(' - ')[0].split(', ')[0][:60].strip()
+            tickers[ysym] = [short, 'etf' if etf else 'equity']
+    for sym, (name, cls) in SPECIALS.items():
+        tickers[sym] = [name, cls]
+    return tickers
 
-    p1 = int(datetime.fromisoformat(last_date).replace(tzinfo=timezone.utc).timestamp()) + 86400
-    p2 = int(datetime.now(timezone.utc).timestamp()) + 86400
 
-    s = new_session()
-    crumb = None
-    for attempt in range(4):
-        try:
-            crumb = refresh_crumb(s)
-            break
-        except Exception as e:
-            print(f'crumb attempt {attempt+1} failed', flush=True)
-            time.sleep(5)
-    if not crumb:
-        print('FATAL: crumb failed', flush=True)
-        return 2
+# ---------------- news ----------------
+def fetch_news(ticker):
+    try:
+        q = urllib.parse.quote(f'{ticker} stock')
+        url = f'https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en'
+        req = urllib.request.Request(url, headers=UA)
+        data = urllib.request.urlopen(req, timeout=25).read()
+        root = ET.fromstring(data)
+        out = []
+        for it in root.findall('.//item')[:5]:
+            title = (it.findtext('title') or '').strip()
+            link = (it.findtext('link') or '').strip()
+            src = it.find('source')
+            source = (src.text.strip() if src is not None and src.text else '')
+            pub = (it.findtext('pubDate') or '').strip()
+            if ' - ' in title:
+                title = title.rsplit(' - ', 1)[0]
+            if title and link:
+                out.append({'t': title[:160], 'u': link[:500], 's': source[:60], 'd': pub[:16]})
+        return out
+    except Exception:
+        return []
 
-    # --- fetch new daily bars (adjusted + raw closes) ---
-    daily_new, raw_new, daily_failed = {}, {}, {}
-    for i, t in enumerate(tickers):
-        res, err, crumb = yahoo_chart(s, crumb, t, f'period1={p1}&period2={p2}&interval=1d')
-        if res is None:
-            daily_failed[t] = err
-            continue
+
+# ---------------- fundamentals ----------------
+def fetch_fundamentals(s, crumb, tickers):
+    out = {}
+    def r2(x): return None if x is None else round(float(x), 2)
+    def r4(x): return None if x is None else round(float(x), 4)
+    for i in range(0, len(tickers), 100):
+        batch = tickers[i:i + 100]
+        enc = urllib.parse.quote(','.join(batch), safe='')
+        for _ in range(3):
+            try:
+                url = (f'https://query1.finance.yahoo.com/v7/finance/quote?symbols={enc}'
+                       f'&fields={FUND_FIELDS}&crumb={urllib.parse.quote(crumb)}')
+                r = s.get(url, timeout=30)
+                if r.status_code == 401:
+                    crumb = refresh_crumb(s); time.sleep(2); continue
+                r.raise_for_status()
+                for q in r.json()['quoteResponse']['result']:
+                    sym = q.get('symbol')
+                    dy = q.get('dividendYield')
+                    if dy is None:
+                        dy = q.get('trailingAnnualDividendYield')
+                    out[sym] = {
+                        'pe': r2(q.get('trailingPE')), 'forwardPE': r2(q.get('forwardPE')),
+                        'eps': r2(q.get('epsTrailingTwelveMonths')),
+                        'forwardEPS': r2(q.get('epsForward')),
+                        'yield': r4(dy), 'beta': r2(q.get('beta')),
+                        'mcap': q.get('marketCap'), 'pb': r2(q.get('priceToBook')),
+                    }
+                break
+            except Exception:
+                time.sleep(3)
+        time.sleep(0.5)
+    return out, crumb
+
+
+# ---------------- CPI ----------------
+def fetch_cpi():
+    try:
+        payload = json.dumps({'seriesid': ['CUUR0000SA0'],
+                              'startyear': '2016',
+                              'endyear': str(date.today().year)}).encode()
+        req = urllib.request.Request('https://api.bls.gov/publicAPI/v2/timeseries/data/',
+                                     data=payload, headers={'Content-Type': 'application/json',
+                                                            'User-Agent': UA['User-Agent']})
+        data = json.loads(urllib.request.urlopen(req, timeout=60).read())
+        rows = data['Results']['series'][0]['data']
+        out = []
+        for d in rows:
+            if d['period'].startswith('M'):
+                out.append([f"{d['year']}-{d['period'][1:]}", round(float(d['value']), 3)])
+        out.sort()
+        return out
+    except Exception as e:
+        log('CPI fetch failed:', str(e)[:100])
+        return []
+
+
+# ---------------- symbol data ----------------
+def write_symbol(sym, v):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(os.path.join(DATA_DIR, fname(sym)), 'w') as f:
+        json.dump(v, f, separators=(',', ':'))
+
+
+def read_symbol(sym):
+    p = os.path.join(DATA_DIR, fname(sym))
+    if not os.path.exists(p):
+        return None
+    try:
+        return json.load(open(p))
+    except Exception:
+        return None
+
+
+def backfill_one(s, crumb, sym, name, cls, daily_days, weekly_weeks):
+    """Full history for a new ticker. Returns (dict|None, crumb)."""
+    week_key = {w: date.fromisoformat(w).isocalendar()[:2] for w in weekly_weeks}
+    v = {'t': sym, 'n': name, 'c': cls, 'd': [], 'u': [],
+         'w': [], 'wu': [], 'ii': [], 'news': [], 'f': {}}
+    res, err, crumb = yahoo_chart(s, crumb, sym, 'range=1y&interval=1d')
+    if res is None:
+        return None, crumb
+    ts = res.get('timestamp') or []
+    adj = ((res.get('indicators') or {}).get('adjclose') or [{}])[0].get('adjclose') or []
+    raw = ((res.get('indicators') or {}).get('quote') or [{}])[0].get('close') or []
+    am, rm = {}, {}
+    for tt, p in zip(ts, adj):
+        if p is not None:
+            am[datetime.fromtimestamp(tt, tz=timezone.utc).strftime('%Y-%m-%d')] = round(float(p), 2)
+    for tt, p in zip(ts, raw):
+        if p is not None:
+            rm[datetime.fromtimestamp(tt, tz=timezone.utc).strftime('%Y-%m-%d')] = round(float(p), 2)
+    if not am:
+        return None, crumb
+    v['d'] = [am.get(ds) for ds in daily_days]
+    v['u'] = [rm.get(ds, am.get(ds)) for ds in daily_days]
+    res, err, crumb = yahoo_chart(s, crumb, sym, 'range=10y&interval=1wk')
+    if res is not None:
         ts = res.get('timestamp') or []
         adj = ((res.get('indicators') or {}).get('adjclose') or [{}])[0].get('adjclose') or []
         raw = ((res.get('indicators') or {}).get('quote') or [{}])[0].get('close') or []
-        out, out_raw = {}, {}
+        am, rm = {}, {}
         for tt, p in zip(ts, adj):
-            if p is None:
-                continue
-            ds = datetime.fromtimestamp(tt, tz=timezone.utc).strftime('%Y-%m-%d')
-            if ds > last_date and ds <= today_et.isoformat():
-                out[ds] = round(float(p), 2)
+            if p is not None:
+                am[datetime.fromtimestamp(tt, tz=timezone.utc).date().isocalendar()[:2]] = round(float(p), 2)
         for tt, p in zip(ts, raw):
-            if p is None:
-                continue
-            ds = datetime.fromtimestamp(tt, tz=timezone.utc).strftime('%Y-%m-%d')
-            if ds > last_date and ds <= today_et.isoformat():
-                out_raw[ds] = round(float(p), 2)
-        daily_new[t] = out
-        raw_new[t] = out_raw
-        if (i + 1) % 100 == 0:
-            print(f'... daily {i+1}/{len(tickers)}', flush=True)
-        time.sleep(0.15)
-
-    new_dates = sorted({x for m in daily_new.values() for x in m})
-    print(f'new dates: {new_dates}', flush=True)
-    if not new_dates:
-        print('UP-TO-DATE: Yahoo returned no new bars', flush=True)
-        return 0
-
-    # --- fetch intraday (last 5 trading days) ---
-    intra_new, intra_failed = {}, {}
-    for i, t in enumerate(tickers):
-        res, err, crumb = yahoo_chart(s, crumb, t, 'range=5d&interval=15m')
-        if res is None:
-            intra_failed[t] = err
-            continue
+            if p is not None:
+                rm[datetime.fromtimestamp(tt, tz=timezone.utc).date().isocalendar()[:2]] = round(float(p), 2)
+        v['w'] = [am.get(week_key[w]) for w in weekly_weeks]
+        v['wu'] = [rm.get(week_key[w], am.get(week_key[w])) for w in weekly_weeks]
+    res, err, crumb = yahoo_chart(s, crumb, sym, 'range=5d&interval=15m')
+    if res is not None:
         ts = res.get('timestamp') or []
         q = ((res.get('indicators') or {}).get('quote') or [{}])[0].get('close') or []
-        out = {}
-        for tt, p in zip(ts, q):
-            if p is None:
-                continue
-            dt = datetime.fromtimestamp(tt, tz=timezone.utc)
-            out[dt.strftime('%Y-%m-%dT%H:%M')] = round(float(p), 2)
-        intra_new[t] = out
-        if (i + 1) % 100 == 0:
-            print(f'... intraday {i+1}/{len(tickers)}', flush=True)
-        time.sleep(0.15)
+        v['ii'] = [[datetime.fromtimestamp(tt, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M'),
+                    round(float(p), 2)]
+                   for tt, p in zip(ts, q) if p is not None]
+    time.sleep(0.1)
+    return v, crumb
 
-    # --- roll daily forward (keep last 366), adjusted + raw ---
-    new_days = (d['daily_days'] + new_dates)[-N_DAILY:]
-    for t, v in syms.items():
-        fetched = daily_new.get(t, {})
-        # extend then trim to keep alignment with new_days
-        ext = v['d'] + [fetched.get(dt) for dt in new_dates]
-        v['d'] = ext[-N_DAILY:]
-        assert len(v['d']) == len(new_days), f'{t} daily misaligned'
-        rfetched = raw_new.get(t, {})
-        rext = v.get('u', v['d']) + [rfetched.get(dt) for dt in new_dates]
-        v['u'] = rext[-N_DAILY:]
-        assert len(v['u']) == len(new_days), f'{t} raw daily misaligned'
-    d['daily_days'] = new_days
 
-    # --- rebuild weekly tail (adjusted + raw) ---
-    # Freeze history older than 70 days; resample the recent span from daily.
-    cutoff = (date.fromisoformat(new_dates[-1]) - timedelta(days=70)).isoformat()
-    cut_idx = next((i for i, w in enumerate(d['weekly_weeks']) if w >= cutoff), 0)
-    frozen_weeks = d['weekly_weeks'][:cut_idx]
-    frozen_w = {t: v['w'][:cut_idx] for t, v in syms.items()}
-    frozen_wu = {t: v.get('wu', v['w'])[:cut_idx] for t, v in syms.items()}
+def update_symbol(s, crumb, sym, v, new_daily_days, cut_idx, drop,
+                  week_groups_days, new_dates, prev_last):
+    """Roll one symbol forward. Calendars precomputed by caller. Returns (ok, crumb)."""
+    today_et = datetime.now(ET_Z).date().isoformat()
+    p1 = int(datetime.fromisoformat(prev_last).replace(tzinfo=timezone.utc).timestamp()) + 86400
+    p2 = int(datetime.now(timezone.utc).timestamp()) + 86400
+    res, err, crumb = yahoo_chart(s, crumb, sym, f'period1={p1}&period2={p2}&interval=1d')
+    if res is None:
+        return False, crumb
+    ts = res.get('timestamp') or []
+    adj = ((res.get('indicators') or {}).get('adjclose') or [{}])[0].get('adjclose') or []
+    raw = ((res.get('indicators') or {}).get('quote') or [{}])[0].get('close') or []
+    am, rm = {}, {}
+    for tt, p in zip(ts, adj):
+        if p is None:
+            continue
+        ds = datetime.fromtimestamp(tt, tz=timezone.utc).strftime('%Y-%m-%d')
+        if ds > prev_last and ds <= today_et:
+            am[ds] = round(float(p), 2)
+    for tt, p in zip(ts, raw):
+        if p is None:
+            continue
+        ds = datetime.fromtimestamp(tt, tz=timezone.utc).strftime('%Y-%m-%d')
+        if ds > prev_last and ds <= today_et:
+            rm[ds] = round(float(p), 2)
+    for dt in new_dates:
+        v['d'].append(am.get(dt))
+        v['u'].append(rm.get(dt, am.get(dt)))
+    v['d'] = v['d'][-N_DAILY:]
+    v['u'] = v['u'][-N_DAILY:]
+    # weekly values: frozen head + resampled tail (labels handled by caller)
+    day_index = {ds: i for i, ds in enumerate(new_daily_days)}
+    new_w, new_wu = [], []
+    for ds_list in week_groups_days:
+        c = cr_ = None
+        for ds in ds_list:
+            p = v['d'][day_index[ds]]
+            if p is not None:
+                c = p
+            pr = v['u'][day_index[ds]]
+            if pr is not None:
+                cr_ = pr
+        new_w.append(c)
+        new_wu.append(cr_)
+    fw = v['w'][:cut_idx] + new_w
+    fwu = v['wu'][:cut_idx] + new_wu
+    if drop:
+        fw, fwu = fw[drop:], fwu[drop:]
+    v['w'], v['wu'] = fw, fwu
+    res, err, crumb = yahoo_chart(s, crumb, sym, 'range=5d&interval=15m')
+    if res is not None:
+        ts = res.get('timestamp') or []
+        q = ((res.get('indicators') or {}).get('quote') or [{}])[0].get('close') or []
+        v['ii'] = [[datetime.fromtimestamp(tt, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M'),
+                    round(float(p), 2)]
+                   for tt, p in zip(ts, q) if p is not None]
+    time.sleep(0.1)
+    return True, crumb
 
-    # date -> index in updated daily arrays (for resampling)
-    day_index = {ds: i for i, ds in enumerate(new_days)}
-    # collect the recent span: from frozen_weeks end (or cutoff) to latest
-    span_start = frozen_weeks[-1] if frozen_weeks else cutoff
-    span_days = [ds for ds in new_days if ds > span_start]
-    # group by ISO week, last non-null close per symbol
-    week_groups = {}
-    for ds in span_days:
-        wk = date.fromisoformat(ds).isocalendar()[:2]
-        week_groups.setdefault(wk, []).append(ds)
-    new_weeks, new_w, new_wu = [], {t: [] for t in tickers}, {t: [] for t in tickers}
-    for wk in sorted(week_groups):
-        ds_list = week_groups[wk]
-        new_weeks.append(ds_list[-1])  # week label = last date
-        for t in tickers:
-            c, cr = None, None
-            for ds in ds_list:
-                p = syms[t]['d'][day_index[ds]]
-                if p is not None:
-                    c = p
-                pr = syms[t]['u'][day_index[ds]]
-                if pr is not None:
-                    cr = pr
-            new_w[t].append(c)
-            new_wu[t].append(cr)
-    all_weeks = frozen_weeks + new_weeks
-    # trim to target length (keep 10Y)
-    if len(all_weeks) > TARGET_WEEKS + 4:
-        drop = len(all_weeks) - TARGET_WEEKS
-        all_weeks = all_weeks[drop:]
-        for t in tickers:
-            frozen_w[t] = (frozen_w[t] + new_w[t])[drop:]
-            frozen_wu[t] = (frozen_wu[t] + new_wu[t])[drop:]
-    else:
-        for t in tickers:
-            frozen_w[t] = frozen_w[t] + new_w[t]
-            frozen_wu[t] = frozen_wu[t] + new_wu[t]
-    d['weekly_weeks'] = all_weeks
-    for t, v in syms.items():
-        v['w'] = frozen_w[t]
-        assert len(v['w']) == len(all_weeks), f'{t} weekly misaligned'
-        v['wu'] = frozen_wu[t]
-        assert len(v['wu']) == len(all_weeks), f'{t} raw weekly misaligned'
 
-    # --- rebuild intraday ---
-    all_slots = sorted({sl for m in intra_new.values() for sl in m})
-    slot_idx = {sl: i for i, sl in enumerate(all_slots)}
-    for t, v in syms.items():
-        m = intra_new.get(t, {})
-        v['ii'] = [[slot_idx[sl], p] for sl, p in sorted(m.items()) if p is not None]
-    d['intraday_slots'] = all_slots
-    # --- refresh news headlines (best-effort; keep old on failure) ---
-    def fetch_news(ticker):
+# ---------------- main ----------------
+def main():
+    log('fetching NASDAQ universe...')
+    tickers = fetch_nasdaq_universe()
+    log(f'universe: {len(tickers)} tickers')
+
+    daily_days, weekly_weeks, asof, old_cpi = [], [], None, []
+    if os.path.exists(UNI_PATH):
         try:
-            q = urllib.parse.quote(f'{ticker} stock')
-            url = f'https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en'
-            req = urllib.request.Request(url, headers={'User-Agent': UA['User-Agent']})
-            data = urllib.request.urlopen(req, timeout=25).read()
-            root = ET.fromstring(data)
-            out = []
-            for it in root.findall('.//item')[:5]:
-                title = (it.findtext('title') or '').strip()
-                link = (it.findtext('link') or '').strip()
-                src = it.find('source')
-                source = (src.text.strip() if src is not None and src.text else '')
-                pub = (it.findtext('pubDate') or '').strip()
-                if ' - ' in title:
-                    title = title.rsplit(' - ', 1)[0]
-                if title and link:
-                    out.append({'t': title[:160], 'u': link[:500], 's': source[:60], 'd': pub[:16]})
-            return out
+            u = json.load(open(UNI_PATH))
+            daily_days = u.get('daily_days') or []
+            weekly_weeks = u.get('weekly_weeks') or []
+            asof = u.get('asof')
+            old_cpi = u.get('cpi') or []
         except Exception:
-            return []
+            pass
 
-    print('fetching news headlines...', flush=True)
+    today_et = datetime.now(ET_Z).date()
+    lwd = today_et
+    while lwd.weekday() >= 5:
+        lwd -= timedelta(days=1)
+    lwd_s = lwd.isoformat()
+
+    # existing data files -> symbols
+    existing = set()
+    if os.path.isdir(DATA_DIR):
+        for fn in os.listdir(DATA_DIR):
+            sym = sym_from_fname(fn)
+            if sym:
+                existing.add(sym)
+
+    backfill_mode = not existing
+    new_dates = []
+    if backfill_mode:
+        log('BACKFILL MODE')
+        asof = lwd_s
+        end = date.fromisoformat(asof)
+        daily_days = [(end - timedelta(days=N_DAILY - 1 - i)).isoformat() for i in range(N_DAILY)]
+        fri = end
+        while fri.weekday() != 4:
+            fri -= timedelta(days=1)
+        weekly_weeks = [(fri - timedelta(weeks=i)).isoformat()
+                        for i in range(TARGET_WEEKS - 1, -1, -1)]
+        to_process = sorted(tickers.keys())
+    else:
+        if asof and asof >= lwd_s:
+            log(f'UP-TO-DATE: asof {asof}')
+            return 0
+        log(f'daily update: {asof} -> {lwd_s}')
+        prev_last = daily_days[-1] if daily_days else asof
+        d = lwd
+        start = date.fromisoformat(asof) if asof else lwd - timedelta(days=1)
+        while d > start:
+            new_dates.append(d.isoformat())
+            d -= timedelta(days=1)
+        new_dates.sort()
+        log(f'new trading dates: {new_dates}')
+        # precompute new calendars + weekly resample plan (shared by all symbols)
+        new_daily_days, new_weekly_weeks = daily_days, weekly_weeks
+        cut_idx, drop, week_groups_days = 0, 0, []
+        if new_dates:
+            new_daily_days = (daily_days + new_dates)[-N_DAILY:]
+            cutoff = (date.fromisoformat(new_dates[-1]) - timedelta(days=70)).isoformat()
+            cut_idx = next((i for i, w in enumerate(weekly_weeks) if w >= cutoff), 0)
+            span_start = weekly_weeks[:cut_idx][-1] if cut_idx else cutoff
+            span_days = [ds for ds in new_daily_days if ds > span_start]
+            groups = {}
+            for ds in span_days:
+                wk = date.fromisoformat(ds).isocalendar()[:2]
+                groups.setdefault(wk, []).append(ds)
+            week_groups_days = [groups[wk] for wk in sorted(groups)]
+            # Friday of each ISO week as the stable label
+            new_weeks = [date.fromisocalendar(wk[0], wk[1], 5).isoformat()
+                         for wk in sorted(groups)]
+            new_weekly_weeks = weekly_weeks[:cut_idx] + new_weeks
+            if len(new_weekly_weeks) > TARGET_WEEKS:
+                drop = len(new_weekly_weeks) - TARGET_WEEKS
+                new_weekly_weeks = new_weekly_weeks[drop:]
+            asof = new_dates[-1]
+            daily_days, weekly_weeks = new_daily_days, new_weekly_weeks
+        # drop delisted files
+        for sym in existing - set(tickers.keys()):
+            p = os.path.join(DATA_DIR, fname(sym))
+            if os.path.exists(p):
+                os.remove(p)
+        to_process = sorted(set(tickers.keys()) & existing)
+        to_backfill = sorted(set(tickers.keys()) - existing)
+        if to_backfill:
+            log(f'{len(to_backfill)} new listings to backfill')
+
+    s = new_session()
+    crumb = None
+    for _ in range(4):
+        try:
+            crumb = refresh_crumb(s)
+            break
+        except Exception:
+            time.sleep(5)
+    if not crumb:
+        log('FATAL: crumb failed')
+        return 2
+
+    ok, failed = 0, []
+
+    def work(sym):
+        name, cls = tickers[sym]
+        if backfill_mode or sym not in existing:
+            v, _c = backfill_one(s, crumb, sym, name, cls, daily_days, weekly_weeks)
+            if v is None:
+                return sym, False
+            write_symbol(sym, v)
+            return sym, True
+        v = read_symbol(sym)
+        if v is None:
+            return sym, False
+        if new_dates:
+            ok_, _c = update_symbol(s, crumb, sym, v, new_daily_days, cut_idx, drop,
+                                   week_groups_days, new_dates, prev_last)
+            if not ok_:
+                return sym, False
+            write_symbol(sym, v)
+        return sym, True
+
+    all_syms = to_process + (to_backfill if not backfill_mode else [])
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        futs = {ex.submit(work, sym): sym for sym in all_syms}
+        done = 0
+        for fut in as_completed(futs):
+            sym, res = fut.result()
+            done += 1
+            if res:
+                ok += 1
+            else:
+                failed.append(sym)
+            if done % 1000 == 0:
+                log(f'  {done}/{len(all_syms)}')
+    log(f'symbols: {ok} ok, {len(failed)} failed')
+    if failed:
+        log('  failed sample:', failed[:10])
+
+    # drop failed backfills from the universe (backfill mode only)
+    if backfill_mode and failed:
+        tickers = {k: v for k, v in tickers.items() if k not in failed}
+
+    # fundamentals (batched)
+    log('fetching fundamentals...')
+    syms = sorted(tickers.keys())
+    funds, crumb = fetch_fundamentals(s, crumb, syms)
+    log(f'fundamentals: {len(funds)}/{len(syms)}')
+    for sym, f in funds.items():
+        p = os.path.join(DATA_DIR, fname(sym))
+        if os.path.exists(p):
+            try:
+                v = json.load(open(p))
+                v['f'] = f
+                json.dump(v, open(p, 'w'), separators=(',', ':'))
+            except Exception:
+                pass
+
+    # news: all on backfill, top-2000 by mcap on daily
+    if backfill_mode:
+        news_syms = syms
+    else:
+        mcaps = []
+        for sym in syms:
+            try:
+                m = (read_symbol(sym) or {}).get('f', {}).get('mcap')
+            except Exception:
+                m = None
+            mcaps.append((m or 0, sym))
+        mcaps.sort(reverse=True)
+        news_syms = [sm for _, sm in mcaps[:2000]]
+
+    # hmm, read_symbol per symbol for mcap is 11k file reads; fine
+    log(f'fetching news for {len(news_syms)}...')
+    def one_news(sym):
+        items = fetch_news(sym)
+        if not items:
+            return False
+        p = os.path.join(DATA_DIR, fname(sym))
+        try:
+            v = json.load(open(p))
+            v['news'] = items
+            json.dump(v, open(p, 'w'), separators=(',', ':'))
+            return True
+        except Exception:
+            return False
     news_ok = 0
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        for t, items in ex.map(lambda t: (t, fetch_news(t)), tickers):
-            if items:
-                syms[t]['news'] = items
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        for i, res in enumerate(ex.map(one_news, news_syms)):
+            if res:
                 news_ok += 1
-    print(f'news refreshed for {news_ok}/{len(tickers)}', flush=True)
+            if (i + 1) % 500 == 0:
+                log(f'  news {i+1}/{len(news_syms)}')
+    log(f'news: {news_ok}/{len(news_syms)}')
 
-    d['fetched_at'] = datetime.now(timezone.utc).isoformat()
-    d['note'] = f'v5: 1Y daily + 10Y weekly (adj+raw) + sparse 15m intraday + news; refreshed to {new_dates[-1]}'
+    cpi = fetch_cpi() or old_cpi
 
-    json.dump(d, open('data.json', 'w'))
-    mb = os.path.getsize('data.json') / 1e6
-    print(f'data.json written: {mb:.1f}MB, daily {new_days[0]}..{new_days[-1]}, '
-          f'{len(all_weeks)} weeks, {len(all_slots)} slots', flush=True)
+    uni = {'asof': asof, 'daily_days': daily_days, 'weekly_weeks': weekly_weeks,
+           'cpi': cpi, 'tickers': tickers,
+           'note': f'{len(tickers)} symbols; data as of {asof}'}
+    json.dump(uni, open(UNI_PATH, 'w'), separators=(',', ':'))
+    nfiles = len(os.listdir(DATA_DIR))
+    log(f'universe.json: {len(tickers)} tickers, asof {asof}, {nfiles} data files')
 
-    # --- validate ---
     errs = []
     def check(cond, msg):
-        print(('PASS ' if cond else 'FAIL ') + msg, flush=True)
+        log(('PASS ' if cond else 'FAIL ') + msg)
         if not cond:
             errs.append(msg)
-    check(5.0 <= mb <= 12.0, f'size {mb:.1f}MB')
-    check(d['daily_days'][-1] == new_dates[-1], 'daily ends at latest')
-    check(len(d['daily_days']) == 366, 'daily len 366')
-    check(all_weeks[-1] == new_dates[-1], 'weekly ends at latest')
-    check(len(daily_failed) < 20, f'daily failed {len(daily_failed)}')
-    check(len(intra_failed) < 20, f'intraday failed {len(intra_failed)}')
+    check(nfiles > 7000, f'data files {nfiles}')
+    check(len(tickers) > 7000, f'tickers {len(tickers)}')
+    check(len(daily_days) == N_DAILY, f'daily_days {len(daily_days)}')
+    check(len(weekly_weeks) == TARGET_WEEKS, f'weekly {len(weekly_weeks)}')
+    check(asof == lwd_s, f'asof {asof}')
+    sp = read_symbol('AAPL')
+    check(sp is not None and len(sp.get('d', [])) == N_DAILY, 'AAPL daily')
+    check(sp is not None and len(sp.get('w', [])) == TARGET_WEEKS, 'AAPL weekly')
+    check(isinstance(sp.get('f', {}).get('pe'), (int, float)), 'AAPL fundamentals')
     if errs:
-        print('ERRORS:', errs, flush=True)
+        log('ERRORS:', errs)
         return 1
-    print(f'REFRESH COMPLETE through {new_dates[-1]}', flush=True)
+    log(f'REFRESH COMPLETE: {len(tickers)} symbols through {asof}')
     return 0
+
 
 if __name__ == '__main__':
     sys.exit(main())

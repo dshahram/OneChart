@@ -1,0 +1,59 @@
+name: Refresh market data
+
+# OneChart data pipeline. First manual run does the full ~11k-ticker backfill
+# (slow, up to ~60 min). After that it rolls forward once per weekday.
+# The job rewrites history via a guarded orphan commit so the repo stays small.
+
+on:
+  schedule:
+    - cron: '0 21 * * 1-5'   # weekdays 21:00 UTC (~2pm PT, after close)
+  workflow_dispatch:
+
+concurrency:
+  group: data-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install requests
+
+      - name: Record HEAD
+        run: echo "HEAD_BEFORE=$(git rev-parse HEAD)" >> $GITHUB_ENV
+
+      - name: Refresh data
+        run: python scripts/refresh.py
+
+      - name: Guarded orphan push
+        run: |
+          set -e
+          # Safety 1: only push if the tree looks valid
+          test -f index.html || { echo "index.html missing, aborting"; exit 1; }
+          test -f universe.json || { echo "universe.json missing, aborting"; exit 1; }
+          N=$(ls data/*.json 2>/dev/null | wc -l)
+          test "$N" -gt 7000 || { echo "only $N data files, aborting"; exit 1; }
+          # Safety 2: don't clobber a commit David pushed while we were fetching
+          git fetch origin main
+          if [ "$(git rev-parse origin/main)" != "$HEAD_BEFORE" ]; then
+            echo "main changed during run; skipping push (will retry tomorrow)"
+            exit 0
+          fi
+          git config user.name "onechart-data-bot"
+          git config user.email "onechart-data-bot@users.noreply.github.com"
+          git checkout --orphan _newmain
+          git add -A
+          git commit -m "data $(date -u +%F)" --quiet
+          git push --force origin _newmain:main

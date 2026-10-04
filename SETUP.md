@@ -68,7 +68,7 @@ You don't have to wait for the schedule — you can trigger a refresh manually:
 
 ## How it works going forward
 
-- **Every weekday at ~2pm PT** (after US market closes), the robot fetches the latest prices for all 662 tickers and updates your site automatically.
+- **Every weekday at ~2pm PT** (after US market closes), the robot fetches the latest prices for all 662 tickers, refreshes news headlines, and updates your site automatically.
 - **Weekends/holidays:** the robot checks, sees no new data, and does nothing.
 - **You do nothing.** No uploads, no buttons, no approvals. Just open your link anytime.
 - The **"Data as of"** label on the chart always tells you how fresh the data is.
@@ -81,7 +81,7 @@ You don't have to wait for the schedule — you can trigger a refresh manually:
 
 **The chart loads but says "Could not load data.json":**
 - Make sure `data.json` is in the **root** of your repo (not inside a folder), next to `index.html`.
-- Check the file actually uploaded (it should show as ~5.6 MB in the repo file list).
+- Check the file actually uploaded (it should show as ~11 MB in the repo file list).
 
 **The `.github` folder didn't upload:**
 1. In your repo, click **Add file** → **Create new file**.
@@ -103,7 +103,7 @@ You don't have to wait for the schedule — you can trigger a refresh manually:
 | File | What it is |
 |------|-----------|
 | `index.html` | Your chart app (loads data from `data.json` on open) |
-| `data.json` | All market data — 662 tickers, 10 years (~5.6 MB) |
+| `data.json` | All market data — 662 tickers, 10 years, news headlines (~11 MB) |
 | `scripts/refresh.py` | The robot's script: fetches fresh prices from Yahoo Finance |
 | `.github/workflows/refresh-data.yml` | Tells GitHub when to run the robot (weekdays after close) |
 | `SETUP.md` | This guide |

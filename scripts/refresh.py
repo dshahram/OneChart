@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """GitHub Action: refresh data.json with the latest market data.
 
-Loads data.json (1Y daily + 10Y weekly + 15m intraday for 662 symbols),
+Loads data.json (1Y daily + 10Y weekly + 15m intraday + news for 662 symbols),
 fetches new bars from Yahoo Finance since the last stored date,
-rolls the series forward, and saves data.json.
+rolls the series forward (adjusted AND raw closes), refreshes news headlines,
+and saves data.json.
 Exits 0 quietly when there is no new trading data (weekends/holidays).
 """
-import json, os, sys, time, urllib.parse
+import json, os, sys, time, urllib.parse, urllib.request
+import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import requests
@@ -80,8 +83,8 @@ def main():
         print('FATAL: crumb failed', flush=True)
         return 2
 
-    # --- fetch new daily bars ---
-    daily_new, daily_failed = {}, {}
+    # --- fetch new daily bars (adjusted + raw closes) ---
+    daily_new, raw_new, daily_failed = {}, {}, {}
     for i, t in enumerate(tickers):
         res, err, crumb = yahoo_chart(s, crumb, t, f'period1={p1}&period2={p2}&interval=1d')
         if res is None:
@@ -89,14 +92,22 @@ def main():
             continue
         ts = res.get('timestamp') or []
         adj = ((res.get('indicators') or {}).get('adjclose') or [{}])[0].get('adjclose') or []
-        out = {}
+        raw = ((res.get('indicators') or {}).get('quote') or [{}])[0].get('close') or []
+        out, out_raw = {}, {}
         for tt, p in zip(ts, adj):
             if p is None:
                 continue
             ds = datetime.fromtimestamp(tt, tz=timezone.utc).strftime('%Y-%m-%d')
             if ds > last_date and ds <= today_et.isoformat():
                 out[ds] = round(float(p), 2)
+        for tt, p in zip(ts, raw):
+            if p is None:
+                continue
+            ds = datetime.fromtimestamp(tt, tz=timezone.utc).strftime('%Y-%m-%d')
+            if ds > last_date and ds <= today_et.isoformat():
+                out_raw[ds] = round(float(p), 2)
         daily_new[t] = out
+        raw_new[t] = out_raw
         if (i + 1) % 100 == 0:
             print(f'... daily {i+1}/{len(tickers)}', flush=True)
         time.sleep(0.15)
@@ -127,7 +138,7 @@ def main():
             print(f'... intraday {i+1}/{len(tickers)}', flush=True)
         time.sleep(0.15)
 
-    # --- roll daily forward (keep last 366) ---
+    # --- roll daily forward (keep last 366), adjusted + raw ---
     new_days = (d['daily_days'] + new_dates)[-N_DAILY:]
     for t, v in syms.items():
         fetched = daily_new.get(t, {})
@@ -135,14 +146,19 @@ def main():
         ext = v['d'] + [fetched.get(dt) for dt in new_dates]
         v['d'] = ext[-N_DAILY:]
         assert len(v['d']) == len(new_days), f'{t} daily misaligned'
+        rfetched = raw_new.get(t, {})
+        rext = v.get('u', v['d']) + [rfetched.get(dt) for dt in new_dates]
+        v['u'] = rext[-N_DAILY:]
+        assert len(v['u']) == len(new_days), f'{t} raw daily misaligned'
     d['daily_days'] = new_days
 
-    # --- rebuild weekly tail ---
+    # --- rebuild weekly tail (adjusted + raw) ---
     # Freeze history older than 70 days; resample the recent span from daily.
     cutoff = (date.fromisoformat(new_dates[-1]) - timedelta(days=70)).isoformat()
     cut_idx = next((i for i, w in enumerate(d['weekly_weeks']) if w >= cutoff), 0)
     frozen_weeks = d['weekly_weeks'][:cut_idx]
     frozen_w = {t: v['w'][:cut_idx] for t, v in syms.items()}
+    frozen_wu = {t: v.get('wu', v['w'])[:cut_idx] for t, v in syms.items()}
 
     # date -> index in updated daily arrays (for resampling)
     day_index = {ds: i for i, ds in enumerate(new_days)}
@@ -154,17 +170,21 @@ def main():
     for ds in span_days:
         wk = date.fromisoformat(ds).isocalendar()[:2]
         week_groups.setdefault(wk, []).append(ds)
-    new_weeks, new_w = [], {t: [] for t in tickers}
+    new_weeks, new_w, new_wu = [], {t: [] for t in tickers}, {t: [] for t in tickers}
     for wk in sorted(week_groups):
         ds_list = week_groups[wk]
         new_weeks.append(ds_list[-1])  # week label = last date
         for t in tickers:
-            c = None
+            c, cr = None, None
             for ds in ds_list:
                 p = syms[t]['d'][day_index[ds]]
                 if p is not None:
                     c = p
+                pr = syms[t]['u'][day_index[ds]]
+                if pr is not None:
+                    cr = pr
             new_w[t].append(c)
+            new_wu[t].append(cr)
     all_weeks = frozen_weeks + new_weeks
     # trim to target length (keep 10Y)
     if len(all_weeks) > TARGET_WEEKS + 4:
@@ -172,13 +192,17 @@ def main():
         all_weeks = all_weeks[drop:]
         for t in tickers:
             frozen_w[t] = (frozen_w[t] + new_w[t])[drop:]
+            frozen_wu[t] = (frozen_wu[t] + new_wu[t])[drop:]
     else:
         for t in tickers:
             frozen_w[t] = frozen_w[t] + new_w[t]
+            frozen_wu[t] = frozen_wu[t] + new_wu[t]
     d['weekly_weeks'] = all_weeks
     for t, v in syms.items():
         v['w'] = frozen_w[t]
         assert len(v['w']) == len(all_weeks), f'{t} weekly misaligned'
+        v['wu'] = frozen_wu[t]
+        assert len(v['wu']) == len(all_weeks), f'{t} raw weekly misaligned'
 
     # --- rebuild intraday ---
     all_slots = sorted({sl for m in intra_new.values() for sl in m})
@@ -187,8 +211,40 @@ def main():
         m = intra_new.get(t, {})
         v['ii'] = [[slot_idx[sl], p] for sl, p in sorted(m.items()) if p is not None]
     d['intraday_slots'] = all_slots
+    # --- refresh news headlines (best-effort; keep old on failure) ---
+    def fetch_news(ticker):
+        try:
+            q = urllib.parse.quote(f'{ticker} stock')
+            url = f'https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en'
+            req = urllib.request.Request(url, headers={'User-Agent': UA['User-Agent']})
+            data = urllib.request.urlopen(req, timeout=25).read()
+            root = ET.fromstring(data)
+            out = []
+            for it in root.findall('.//item')[:5]:
+                title = (it.findtext('title') or '').strip()
+                link = (it.findtext('link') or '').strip()
+                src = it.find('source')
+                source = (src.text.strip() if src is not None and src.text else '')
+                pub = (it.findtext('pubDate') or '').strip()
+                if ' - ' in title:
+                    title = title.rsplit(' - ', 1)[0]
+                if title and link:
+                    out.append({'t': title[:160], 'u': link[:500], 's': source[:60], 'd': pub[:16]})
+            return out
+        except Exception:
+            return []
+
+    print('fetching news headlines...', flush=True)
+    news_ok = 0
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for t, items in ex.map(lambda t: (t, fetch_news(t)), tickers):
+            if items:
+                syms[t]['news'] = items
+                news_ok += 1
+    print(f'news refreshed for {news_ok}/{len(tickers)}', flush=True)
+
     d['fetched_at'] = datetime.now(timezone.utc).isoformat()
-    d['note'] = f'1Y daily + 10Y weekly + sparse 15m intraday; refreshed to {new_dates[-1]}'
+    d['note'] = f'v5: 1Y daily + 10Y weekly (adj+raw) + sparse 15m intraday + news; refreshed to {new_dates[-1]}'
 
     json.dump(d, open('data.json', 'w'))
     mb = os.path.getsize('data.json') / 1e6
@@ -201,7 +257,7 @@ def main():
         print(('PASS ' if cond else 'FAIL ') + msg, flush=True)
         if not cond:
             errs.append(msg)
-    check(5.0 <= mb <= 7.5, f'size {mb:.1f}MB')
+    check(5.0 <= mb <= 12.0, f'size {mb:.1f}MB')
     check(d['daily_days'][-1] == new_dates[-1], 'daily ends at latest')
     check(len(d['daily_days']) == 366, 'daily len 366')
     check(all_weeks[-1] == new_dates[-1], 'weekly ends at latest')

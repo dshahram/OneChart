@@ -1,7 +1,7 @@
 name: Refresh market data
 
 # OneChart data pipeline. First manual run does the full ~11k-ticker backfill
-# (slow, up to ~60 min). After that it rolls forward once per weekday.
+# (slow, up to ~3 hours). After that it rolls forward once per weekday.
 # The job rewrites history via a guarded orphan commit so the repo stays small.
 
 on:
@@ -16,7 +16,7 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 360
     permissions:
       contents: write
     steps:

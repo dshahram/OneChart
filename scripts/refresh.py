@@ -10,7 +10,7 @@ First run (no data/ dir or empty): full backfill of every ticker (slow, ~45 min)
 Daily runs: roll series forward, refresh news/fundamentals/CPI, update universe.
 Validation failure -> exit non-zero (the workflow then skips the push).
 """
-import json, os, re, sys, time, urllib.parse, urllib.request
+import json, os, re, subprocess, sys, time, urllib.parse, urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
@@ -43,6 +43,30 @@ FUND_FIELDS = ('symbol,longName,trailingPE,forwardPE,epsTrailingTwelveMonths,eps
 
 def log(*a):
     print(*a, flush=True)
+
+
+def git_push_progress(msg):
+    """Commit and push data/ progress so a timeout doesn't lose work."""
+    try:
+        subprocess.run(['git', 'config', 'user.name', 'onechart-data-bot'],
+                       cwd=ROOT, check=True, capture_output=True)
+        subprocess.run(['git', 'config', 'user.email',
+                        'onechart-data-bot@users.noreply.github.com'],
+                       cwd=ROOT, check=True, capture_output=True)
+        subprocess.run(['git', 'add', 'data/'], cwd=ROOT, check=True,
+                       capture_output=True)
+        r = subprocess.run(['git', 'status', '--porcelain', 'data/'],
+                           cwd=ROOT, capture_output=True, text=True)
+        if r.stdout.strip():
+            subprocess.run(['git', 'commit', '-m', msg, '--quiet'],
+                           cwd=ROOT, check=True)
+            subprocess.run(['git', 'push', 'origin', 'HEAD:main'],
+                           cwd=ROOT, check=True, capture_output=True)
+            log(f'  pushed: {msg}')
+        return True
+    except Exception as e:
+        log(f'  progress push failed (will retry next chunk): {str(e)[:100]}')
+        return False
 
 
 def fname(sym):
@@ -228,11 +252,12 @@ def read_symbol(sym):
 
 
 def backfill_one(s, crumb, sym, name, cls, daily_days, weekly_weeks):
-    """Full history for a new ticker. Returns (dict|None, crumb)."""
-    week_key = {w: date.fromisoformat(w).isocalendar()[:2] for w in weekly_weeks}
+    """Full history for a new ticker. Single 10y/daily Yahoo call; weekly is
+    resampled from daily (last close on/before each Friday). Intraday is left
+    empty -- the next daily update fills it in. Returns (dict|None, crumb)."""
     v = {'t': sym, 'n': name, 'c': cls, 'd': [], 'u': [],
          'w': [], 'wu': [], 'ii': [], 'news': [], 'f': {}}
-    res, err, crumb = yahoo_chart(s, crumb, sym, 'range=1y&interval=1d')
+    res, err, crumb = yahoo_chart(s, crumb, sym, 'range=10y&interval=1d')
     if res is None:
         return None, crumb
     ts = res.get('timestamp') or []
@@ -249,27 +274,17 @@ def backfill_one(s, crumb, sym, name, cls, daily_days, weekly_weeks):
         return None, crumb
     v['d'] = [am.get(ds) for ds in daily_days]
     v['u'] = [rm.get(ds, am.get(ds)) for ds in daily_days]
-    res, err, crumb = yahoo_chart(s, crumb, sym, 'range=10y&interval=1wk')
-    if res is not None:
-        ts = res.get('timestamp') or []
-        adj = ((res.get('indicators') or {}).get('adjclose') or [{}])[0].get('adjclose') or []
-        raw = ((res.get('indicators') or {}).get('quote') or [{}])[0].get('close') or []
-        am, rm = {}, {}
-        for tt, p in zip(ts, adj):
-            if p is not None:
-                am[datetime.fromtimestamp(tt, tz=timezone.utc).date().isocalendar()[:2]] = round(float(p), 2)
-        for tt, p in zip(ts, raw):
-            if p is not None:
-                rm[datetime.fromtimestamp(tt, tz=timezone.utc).date().isocalendar()[:2]] = round(float(p), 2)
-        v['w'] = [am.get(week_key[w]) for w in weekly_weeks]
-        v['wu'] = [rm.get(week_key[w], am.get(week_key[w])) for w in weekly_weeks]
-    res, err, crumb = yahoo_chart(s, crumb, sym, 'range=5d&interval=15m')
-    if res is not None:
-        ts = res.get('timestamp') or []
-        q = ((res.get('indicators') or {}).get('quote') or [{}])[0].get('close') or []
-        v['ii'] = [[datetime.fromtimestamp(tt, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M'),
-                    round(float(p), 2)]
-                   for tt, p in zip(ts, q) if p is not None]
+    # Weekly: last daily close on or before each Friday (look back up to 7d)
+    for fri in weekly_weeks:
+        d = date.fromisoformat(fri)
+        found = None
+        for back in range(8):
+            ds = (d - timedelta(days=back)).isoformat()
+            if ds in am:
+                found = ds
+                break
+        v['w'].append(am[found] if found else None)
+        v['wu'].append(rm.get(found, am.get(found)) if found else None)
     time.sleep(0.1)
     return v, crumb
 
@@ -365,10 +380,12 @@ def main():
             if sym:
                 existing.add(sym)
 
-    backfill_mode = not existing
+    universe_syms = set(tickers.keys())
     new_dates = []
-    if backfill_mode:
-        log('BACKFILL MODE')
+    # Modes: fresh backfill | resume partial backfill | daily update
+    if not existing:
+        backfill_mode, resume_mode = True, False
+        log('BACKFILL MODE (fresh)')
         asof = lwd_s
         end = date.fromisoformat(asof)
         daily_days = [(end - timedelta(days=N_DAILY - 1 - i)).isoformat() for i in range(N_DAILY)]
@@ -377,8 +394,25 @@ def main():
             fri -= timedelta(days=1)
         weekly_weeks = [(fri - timedelta(weeks=i)).isoformat()
                         for i in range(TARGET_WEEKS - 1, -1, -1)]
-        to_process = sorted(tickers.keys())
+        to_process = sorted(universe_syms)
+    elif not universe_syms.issubset(existing):
+        backfill_mode, resume_mode = True, True
+        log('BACKFILL MODE (resume)')
+        if not daily_days or not weekly_weeks:
+            asof = lwd_s
+            end = date.fromisoformat(asof)
+            daily_days = [(end - timedelta(days=N_DAILY - 1 - i)).isoformat() for i in range(N_DAILY)]
+            fri = end
+            while fri.weekday() != 4:
+                fri -= timedelta(days=1)
+            weekly_weeks = [(fri - timedelta(weeks=i)).isoformat()
+                            for i in range(TARGET_WEEKS - 1, -1, -1)]
+        else:
+            asof = asof or lwd_s
+        to_process = sorted(universe_syms - existing)
+        log(f'{len(existing)} already done, {len(to_process)} remaining')
     else:
+        backfill_mode, resume_mode = False, False
         if asof and asof >= lwd_s:
             log(f'UP-TO-DATE: asof {asof}')
             return 0
@@ -470,13 +504,45 @@ def main():
                 failed.append(sym)
             if done % 1000 == 0:
                 log(f'  {done}/{len(all_syms)}')
+                if backfill_mode:
+                    git_push_progress(f'backfill progress {done}/{len(all_syms)}')
     log(f'symbols: {ok} ok, {len(failed)} failed')
     if failed:
         log('  failed sample:', failed[:10])
 
-    # drop failed backfills from the universe (backfill mode only)
-    if backfill_mode and failed:
-        tickers = {k: v for k, v in tickers.items() if k not in failed}
+    # In backfill mode, check whether we actually finished. If not, push
+    # what we have and exit 0 -- the next run resumes instead of restarting.
+    if backfill_mode:
+        nfiles = len([f for f in os.listdir(DATA_DIR) if f.endswith('.json')]) \
+            if os.path.isdir(DATA_DIR) else 0
+        if nfiles < len(tickers) * 0.95:
+            log(f'PARTIAL BACKFILL: {nfiles}/{len(tickers)} files. '
+                f'Progress saved; re-run the workflow to continue.')
+            # Save calendars (asof stays null so the site keeps showing
+            # "building"; the next run resumes with identical calendars)
+            uni = {'asof': None, 'daily_days': daily_days,
+                   'weekly_weeks': weekly_weeks, 'cpi': old_cpi,
+                   'tickers': tickers,
+                   'note': f'partial backfill {nfiles}/{len(tickers)}'}
+            json.dump(uni, open(UNI_PATH, 'w'), separators=(',', ':'))
+            git_push_progress(f'backfill partial {nfiles}/{len(tickers)}')
+            # Also push universe.json with the calendars
+            try:
+                subprocess.run(['git', 'add', 'universe.json'], cwd=ROOT,
+                               check=True, capture_output=True)
+                subprocess.run(['git', 'commit', '-m',
+                                f'backfill calendars {nfiles}/{len(tickers)}',
+                                '--quiet'], cwd=ROOT, check=True)
+                subprocess.run(['git', 'push', 'origin', 'HEAD:main'],
+                               cwd=ROOT, check=True, capture_output=True)
+            except Exception as e:
+                log(f'  universe push failed: {str(e)[:100]}')
+            return 0
+        log(f'BACKFILL COMPLETE: {nfiles}/{len(tickers)} files')
+        asof = lwd_s  # pin to today for the final universe.json
+        # drop failed backfills from the universe (only on completion)
+        if failed:
+            tickers = {k: v for k, v in tickers.items() if k not in failed}
 
     # fundamentals (batched)
     log('fetching fundamentals...')
@@ -493,21 +559,19 @@ def main():
             except Exception:
                 pass
 
-    # news: all on backfill, top-2000 by mcap on daily
-    if backfill_mode:
-        news_syms = syms
-    else:
-        mcaps = []
-        for sym in syms:
-            try:
-                m = (read_symbol(sym) or {}).get('f', {}).get('mcap')
-            except Exception:
-                m = None
-            mcaps.append((m or 0, sym))
-        mcaps.sort(reverse=True)
-        news_syms = [sm for _, sm in mcaps[:2000]]
-
-    # hmm, read_symbol per symbol for mcap is 11k file reads; fine
+    # news: top by market cap (backfill caps at 500 to stay within the
+    # workflow timeout; daily runs cover the top 2000). Uses the in-memory
+    # fundamentals just fetched instead of re-reading 11k files.
+    mcaps = []
+    for sym in syms:
+        try:
+            m = (funds.get(sym) or {}).get('mcap')
+        except Exception:
+            m = None
+        mcaps.append((m or 0, sym))
+    mcaps.sort(reverse=True)
+    news_limit = 500 if backfill_mode else 2000
+    news_syms = [sm for _, sm in mcaps[:news_limit]]
     log(f'fetching news for {len(news_syms)}...')
     def one_news(sym):
         items = fetch_news(sym)

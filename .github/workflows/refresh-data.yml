@@ -44,10 +44,19 @@ jobs:
           test -f index.html || { echo "index.html missing, aborting"; exit 1; }
           test -f universe.json || { echo "universe.json missing, aborting"; exit 1; }
           N=$(ls data/*.json 2>/dev/null | wc -l)
-          test "$N" -gt 7000 || { echo "only $N data files, aborting"; exit 1; }
+          if [ "$N" -le 7000 ]; then
+            echo "Partial backfill ($N data files). Progress was saved by the script; re-run the workflow to continue."
+            exit 0
+          fi
           # Safety 2: don't clobber a commit David pushed while we were fetching
           git fetch origin main
-          if [ "$(git rev-parse origin/main)" != "$HEAD_BEFORE" ]; then
+          # (commits by onechart-data-bot are this job's own checkpoint pushes: ignore them)
+          if ! AUTHORS=$(git log --format='%an' "$HEAD_BEFORE..origin/main"); then
+            echo "could not compare history; skipping push to be safe"
+            exit 0
+          fi
+          OTHERS=$(printf '%s\n' "$AUTHORS" | grep -v '^onechart-data-bot$' | grep -c . || true)
+          if [ "${OTHERS:-0}" -gt 0 ]; then
             echo "main changed during run; skipping push (will retry tomorrow)"
             exit 0
           fi

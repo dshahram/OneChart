@@ -85,8 +85,8 @@ def git_push_progress(msg):
     if not git_ensure():
         return False
     try:
-        subprocess.run(['git', 'add', 'data/'], cwd=ROOT, check=True,
-                       capture_output=True)
+        subprocess.run(['git', 'add', 'data/', 'universe.json'], cwd=ROOT,
+                       check=True, capture_output=True)
         r = subprocess.run(['git', 'status', '--porcelain', 'data/'],
                            cwd=ROOT, capture_output=True, text=True)
         if r.stdout.strip():

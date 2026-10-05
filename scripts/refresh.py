@@ -45,27 +45,59 @@ def log(*a):
     print(*a, flush=True)
 
 
-def git_push_progress(msg):
-    """Commit and push data/ progress so a timeout doesn't lose work."""
+_git_ok = None
+
+def git_ensure():
+    """One-time git setup for Actions runners (safe.directory etc.)."""
+    global _git_ok
+    if _git_ok is not None:
+        return _git_ok
     try:
+        # GitHub Actions runners often need this (dubious ownership -> exit 128)
+        subprocess.run(['git', 'config', '--global', '--add', 'safe.directory', '*'],
+                       check=True, capture_output=True)
         subprocess.run(['git', 'config', 'user.name', 'onechart-data-bot'],
                        cwd=ROOT, check=True, capture_output=True)
         subprocess.run(['git', 'config', 'user.email',
                         'onechart-data-bot@users.noreply.github.com'],
                        cwd=ROOT, check=True, capture_output=True)
+        r = subprocess.run(['git', 'rev-parse', '--is-inside-work-tree'],
+                           cwd=ROOT, capture_output=True, text=True)
+        _git_ok = r.returncode == 0 and r.stdout.strip() == 'true'
+        if not _git_ok:
+            log('  git setup: not inside a work tree!')
+        return _git_ok
+    except Exception as e:
+        log(f'  git setup failed: {str(e)[:150]}')
+        _git_ok = False
+        return False
+
+
+def _git_err(e):
+    if isinstance(e, subprocess.CalledProcessError):
+        err = (e.stderr or b'').decode(errors='replace').strip()
+        return f'exit {e.returncode}: {err[:200]}' if err else f'exit {e.returncode}'
+    return str(e)[:200]
+
+
+def git_push_progress(msg):
+    """Commit and push data/ progress so a timeout doesn't lose work."""
+    if not git_ensure():
+        return False
+    try:
         subprocess.run(['git', 'add', 'data/'], cwd=ROOT, check=True,
                        capture_output=True)
         r = subprocess.run(['git', 'status', '--porcelain', 'data/'],
                            cwd=ROOT, capture_output=True, text=True)
         if r.stdout.strip():
             subprocess.run(['git', 'commit', '-m', msg, '--quiet'],
-                           cwd=ROOT, check=True)
+                           cwd=ROOT, check=True, capture_output=True)
             subprocess.run(['git', 'push', 'origin', 'HEAD:main'],
                            cwd=ROOT, check=True, capture_output=True)
             log(f'  pushed: {msg}')
         return True
     except Exception as e:
-        log(f'  progress push failed (will retry next chunk): {str(e)[:100]}')
+        log(f'  progress push failed (will retry next chunk): {_git_err(e)}')
         return False
 
 
@@ -290,7 +322,7 @@ def backfill_one(s, crumb, sym, name, cls, daily_days, weekly_weeks):
 
 
 def update_symbol(s, crumb, sym, v, new_daily_days, cut_idx, drop,
-                  week_groups_days, new_dates, prev_last):
+                  week_groups_days, new_dates, prev_last, fetch_intraday=True):
     """Roll one symbol forward. Calendars precomputed by caller. Returns (ok, crumb)."""
     today_et = datetime.now(ET_Z).date().isoformat()
     p1 = int(datetime.fromisoformat(prev_last).replace(tzinfo=timezone.utc).timestamp()) + 86400
@@ -338,13 +370,14 @@ def update_symbol(s, crumb, sym, v, new_daily_days, cut_idx, drop,
     if drop:
         fw, fwu = fw[drop:], fwu[drop:]
     v['w'], v['wu'] = fw, fwu
-    res, err, crumb = yahoo_chart(s, crumb, sym, 'range=5d&interval=15m')
-    if res is not None:
-        ts = res.get('timestamp') or []
-        q = ((res.get('indicators') or {}).get('quote') or [{}])[0].get('close') or []
-        v['ii'] = [[datetime.fromtimestamp(tt, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M'),
-                    round(float(p), 2)]
-                   for tt, p in zip(ts, q) if p is not None]
+    if fetch_intraday:
+        res, err, crumb = yahoo_chart(s, crumb, sym, 'range=5d&interval=15m')
+        if res is not None:
+            ts = res.get('timestamp') or []
+            q = ((res.get('indicators') or {}).get('quote') or [{}])[0].get('close') or []
+            v['ii'] = [[datetime.fromtimestamp(tt, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M'),
+                        round(float(p), 2)]
+                       for tt, p in zip(ts, q) if p is not None]
     time.sleep(0.1)
     return True, crumb
 
@@ -458,6 +491,22 @@ def main():
         if to_backfill:
             log(f'{len(to_backfill)} new listings to backfill')
 
+    # Intraday (1D view) only for the top-2000 by market cap -- fetching
+    # 15m bars for 11k micro-caps every day is what made daily runs slow.
+    # Uses last known mcap from existing data files.
+    intraday_syms = set()
+    if not backfill_mode and existing:
+        mc = []
+        for sym in existing:
+            try:
+                m = (read_symbol(sym) or {}).get('f', {}).get('mcap')
+            except Exception:
+                m = None
+            mc.append((m or 0, sym))
+        mc.sort(reverse=True)
+        intraday_syms = {sm for _, sm in mc[:2000]}
+        log(f'intraday refresh for top {len(intraday_syms)} by mcap')
+
     s = new_session()
     crumb = None
     for _ in range(4):
@@ -485,7 +534,8 @@ def main():
             return sym, False
         if new_dates:
             ok_, _c = update_symbol(s, crumb, sym, v, new_daily_days, cut_idx, drop,
-                                   week_groups_days, new_dates, prev_last)
+                                   week_groups_days, new_dates, prev_last,
+                                   fetch_intraday=(sym in intraday_syms))
             if not ok_:
                 return sym, False
             write_symbol(sym, v)

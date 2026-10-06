@@ -162,7 +162,7 @@
       <button class="active" data-view="indexed" aria-pressed="true">Indexed</button><button data-view="price" aria-pressed="false">True price</button><button data-view="growth" aria-pressed="false">Growth of $10,000</button>
     </div></div>
     <div class="seg-wrap" id="contribWrap" hidden><span class="seg-label">Contributions</span><div class="contrib-row"><label>$<input id="contribInitial" type="number" min="0" step="100" value="10000" aria-label="Initial investment"></label><span>start +</span><label>$<input id="contribAmount" type="number" min="0" step="50" value="0" aria-label="Recurring contribution"></label><select id="contribCadence" aria-label="Contribution cadence"><option value="monthly">/ month</option><option value="quarterly">/ quarter</option><option value="annual">/ year</option></select></div></div>
-    <div class="seg-wrap"><span class="seg-label">Dividends</span><div class="seg" id="divToggle" aria-label="Dividend reinvestment"><button class="active" data-reinvest="1" aria-pressed="true">Reinvested</button><button data-reinvest="0" aria-pressed="false">Price only</button></div></div><div class="seg-wrap"><span class="seg-label metric-help" data-tip="Nominal: actual dollar amounts at the time. Real: adjusted for inflation using CPI, shown in today\u2019s purchasing power.">Dollars</span><div class="seg" aria-label="Inflation adjustment"><button class="active" data-real="0" aria-pressed="true">Nominal</button><button data-real="1" aria-pressed="false">Real</button></div></div>
+    <div class="seg-wrap"><span class="seg-label">Dividends</span><div class="seg" id="divToggle" aria-label="Dividend reinvestment"><button class="active" data-reinvest="1" aria-pressed="true">Reinvested</button><button data-reinvest="0" aria-pressed="false">Price only</button></div></div><div class="seg-wrap"><span class="seg-label metric-help" data-tip="Nominal: actual dollar amounts at the time. Real: adjusted for inflation using CPI, shown in today's purchasing power.">Dollars</span><div class="seg" aria-label="Inflation adjustment"><button class="active" data-real="0" aria-pressed="true">Nominal</button><button data-real="1" aria-pressed="false">Real</button></div></div>
   </section>
   <section class="control-deck" aria-label="Analysis controls">
     <div class="control-block"><span class="control-label">Gesture</span><div class="seg"><button class="active" data-tool="pan">Pan</button><button data-tool="measure">Measure</button></div><button class="plain-btn" id="resetView">Reset view</button></div>
@@ -350,6 +350,16 @@ function renderMeasurePanel(series){
     row.append(left,right);
     panel.appendChild(row);
   });
+  try{
+    const fa=inflFactor(a),fb=inflFactor(b);
+    if(Number.isFinite(fa)&&Number.isFinite(fb)&&fb>0){
+      const inflPct=(fa/fb-1)*100;
+      const irow=document.createElement('div'),il=document.createElement('span'),ir=document.createElement('b');
+      irow.className='measure-row';il.style.color='var(--muted)';il.textContent='Inflation';
+      ir.textContent=(inflPct>=0?'+':'')+inflPct.toFixed(1)+'%';
+      irow.append(il,ir);panel.appendChild(irow);
+    }
+  }catch(e){}
 }
 function renderChart(){
   const host=$('#plot'),panel=$('#measurePanel'),readout=$('#readout');host.querySelectorAll('svg,.empty').forEach(n=>n.remove());panel.hidden=true;readout.classList.remove('visible');readout.innerHTML='';

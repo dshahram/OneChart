@@ -698,7 +698,11 @@ def main():
         if os.path.exists(p):
             try:
                 v = json.load(open(p))
-                v['f'] = f
+                # Merge: preserve extended fundamentals from backfill for
+                # symbols outside the daily top-2000 quoteSummary fetch.
+                existing = v.get('f') or {}
+                existing.update(f)
+                v['f'] = existing
                 json.dump(v, open(p, 'w'), separators=(',', ':'))
             except Exception:
                 pass

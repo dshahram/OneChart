@@ -387,6 +387,12 @@ def main():
     log('fetching NASDAQ universe...')
     tickers = fetch_nasdaq_universe()
     log(f'universe: {len(tickers)} tickers')
+    # Guard: a truncated universe fetch (e.g. transient NASDAQ outage) must
+    # never trigger mass "delisted" deletions. Abort loudly instead.
+    if len(tickers) < 10000:
+        log(f'FATAL: universe too small ({len(tickers)} tickers, expected ~11700). '
+            f'Aborting to avoid deleting data.')
+        return 3
 
     daily_days, weekly_weeks, asof, old_cpi = [], [], None, []
     if os.path.exists(UNI_PATH):

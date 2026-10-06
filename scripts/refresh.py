@@ -245,6 +245,70 @@ def fetch_fundamentals(s, crumb, tickers):
 
 
 # ---------------- CPI ----------------
+def fetch_quote_summary(s, crumb, symbols, max_workers=10):
+    """Extended fundamentals via quoteSummary (financialData + defaultKeyStatistics).
+    Returns {sym: {debtToEquity, fcf, revGrowth, roe, profitMargin, dti}}.
+    D/A (debt/assets) is unavailable — Yahoo's free API doesn't expose totalAssets.
+    One call per symbol (not batched); use for backfill or top-N only.
+    """
+    out = {}
+    def r2(x): return None if x is None else round(float(x), 2)
+    def raw(d, k):
+        v = (d or {}).get(k)
+        return v.get('raw') if isinstance(v, dict) else v
+
+    def one(sym):
+        for _ in range(3):
+            try:
+                url = (f'https://query1.finance.yahoo.com/v10/finance/quoteSummary/{urllib.parse.quote(sym, safe="")}'
+                       f'?modules=financialData,defaultKeyStatistics&crumb={urllib.parse.quote(crumb)}')
+                r = s.get(url, timeout=30)
+                if r.status_code == 401:
+                    time.sleep(2)
+                    continue
+                if r.status_code == 429:
+                    time.sleep(12)
+                    continue
+                r.raise_for_status()
+                res = (r.json().get('quoteSummary') or {}).get('result')
+                if not res:
+                    time.sleep(2)
+                    continue
+                res = res[0]
+                fd = res.get('financialData') or {}
+                ks = res.get('defaultKeyStatistics') or {}
+                total_debt = raw(fd, 'totalDebt')
+                net_income = raw(ks, 'netIncomeToCommon')
+                dti = None
+                # Debt / net income: blank for non-positive income (avoids misleading negative ratios)
+                if total_debt and net_income:
+                    try:
+                        ni = float(net_income)
+                        if ni > 0:
+                            dti = round(float(total_debt) / ni, 2)
+                    except (ZeroDivisionError, ValueError):
+                        dti = None
+                return sym, {
+                    # Yahoo returns debtToEquity as a percentage (e.g. 78.445 = 0.78x); normalize to ratio
+                    'debtToEquity': (round(float(raw(fd, 'debtToEquity')) / 100, 4)
+                                     if raw(fd, 'debtToEquity') is not None else None),
+                    'fcf': raw(fd, 'freeCashflow'),
+                    'revGrowth': r2(raw(fd, 'revenueGrowth')),
+                    'roe': r2(raw(fd, 'returnOnEquity')),
+                    'profitMargin': r2(raw(fd, 'profitMargins')),
+                    'dti': dti,
+                }
+            except Exception:
+                time.sleep(3)
+        return sym, None
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for sym, data in ex.map(one, symbols):
+            if data:
+                out[sym] = data
+    return out
+
+
 def fetch_cpi():
     try:
         payload = json.dumps({'seriesid': ['CUUR0000SA0'],
@@ -258,7 +322,11 @@ def fetch_cpi():
         out = []
         for d in rows:
             if d['period'].startswith('M'):
-                out.append([f"{d['year']}-{d['period'][1:]}", round(float(d['value']), 3)])
+                try:
+                    v = float(d['value'])
+                except (ValueError, TypeError):
+                    continue
+                out.append([f"{d['year']}-{d['period'][1:]}", round(v, 3)])
         out.sort()
         return out
     except Exception as e:
@@ -605,6 +673,26 @@ def main():
     syms = sorted(tickers.keys())
     funds, crumb = fetch_fundamentals(s, crumb, syms)
     log(f'fundamentals: {len(funds)}/{len(syms)}')
+
+    # Extended fundamentals via quoteSummary (D/E, FCF, revenue growth, ROE,
+    # profit margin, DTI). One call per symbol — full universe on backfill,
+    # top 2000 by market cap on daily runs (consistent with intraday policy).
+    if backfill_mode:
+        qs_syms = syms
+    else:
+        # top 2000 by market cap from just-fetched fundamentals
+        mc_top = sorted(syms, key=lambda sm: (funds.get(sm) or {}).get('mcap') or 0,
+                        reverse=True)[:2000]
+        qs_syms = mc_top
+    log(f'fetching extended fundamentals for {len(qs_syms)} symbols...')
+    qs_funds = fetch_quote_summary(s, crumb, qs_syms)
+    log(f'extended fundamentals: {len(qs_funds)}/{len(qs_syms)}')
+    for sym, qf in qs_funds.items():
+        if sym in funds:
+            funds[sym].update(qf)
+        else:
+            funds[sym] = qf
+
     for sym, f in funds.items():
         p = os.path.join(DATA_DIR, fname(sym))
         if os.path.exists(p):
@@ -654,6 +742,7 @@ def main():
 
     uni = {'asof': asof, 'daily_days': daily_days, 'weekly_weeks': weekly_weeks,
            'cpi': cpi, 'tickers': tickers,
+           'fundamentals_asof': today_et.isoformat(),
            'note': f'{len(tickers)} symbols; data as of {asof}'}
     json.dump(uni, open(UNI_PATH, 'w'), separators=(',', ':'))
     nfiles = len(os.listdir(DATA_DIR))

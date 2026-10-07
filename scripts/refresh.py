@@ -525,8 +525,30 @@ def main():
                             for i in range(TARGET_WEEKS - 1, -1, -1)]
         else:
             asof = asof or lwd_s
-        to_process = sorted((universe_syms - failed_syms) - existing)
-        log(f'{len(existing)} already done, {len(to_process)} remaining')
+        new_syms = sorted((universe_syms - failed_syms) - existing)
+        log(f'{len(existing)} already done, {len(new_syms)} new to backfill')
+        # Holistic fix: existing symbols still need daily roll-forward even in
+        # backfill mode. Compute new_dates and include existing symbols.
+        to_process = new_syms
+        if asof and asof < lwd_s:
+            log(f'also doing daily update for existing: {asof} -> {lwd_s}')
+            prev_last = daily_days[-1] if daily_days else asof
+            d = lwd
+            start = date.fromisoformat(asof)
+            while d > start:
+                new_dates.append(d.isoformat())
+                d -= timedelta(days=1)
+            new_dates.sort()
+            if new_dates:
+                # Update calendars for the daily roll-forward
+                new_daily_days = (daily_days + new_dates)[-N_DAILY:]
+                # (weekly recompute happens in daily-update branch; for resume
+                # mode we keep it simple and let next daily run handle weeks)
+                daily_days = new_daily_days
+                asof = new_dates[-1]
+                # Add existing symbols to to_process for daily update
+                to_process = sorted(set(to_process) | existing)
+                log(f'including {len(existing)} existing symbols for daily update')
     else:
         backfill_mode, resume_mode = False, False
         if asof and asof >= lwd_s:
@@ -606,7 +628,7 @@ def main():
 
     def work(sym):
         name, cls = tickers[sym]
-        if backfill_mode or sym not in existing:
+        if sym not in existing:
             v, _c = backfill_one(s, crumb, sym, name, cls, daily_days, weekly_weeks)
             if v is None:
                 return sym, False
@@ -653,7 +675,7 @@ def main():
     # Verify the latest date actually has market data. Yahoo may not have
     # today's close yet when the script runs (e.g. delays after market close).
     # If the latest new_date has no data, don't advance asof to it.
-    if not backfill_mode and new_dates:
+    if new_dates and (not backfill_mode or resume_mode):
         latest = new_dates[-1]
         # Check liquid symbols that should have data if market was open
         checks, have_data = 0, 0
@@ -712,7 +734,10 @@ def main():
                 log(f'  universe push failed: {str(e)[:100]}')
             return 0
         log(f'BACKFILL COMPLETE: {nfiles}/{len(tickers)} files')
-        asof = lwd_s  # pin to today for the final universe.json
+        # Only pin asof in fresh backfill mode. In resume mode, asof was
+        # already set by the daily-update logic (or verification) above.
+        if not resume_mode:
+            asof = lwd_s  # pin to today for the final universe.json
         # drop failed backfills from the universe (only on completion)
         if failed:
             tickers = {k: v for k, v in tickers.items() if k not in failed}

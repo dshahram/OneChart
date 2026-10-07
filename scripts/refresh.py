@@ -634,6 +634,39 @@ def main():
     if failed:
         log('  failed sample:', failed[:10])
 
+    # Verify the latest date actually has market data. Yahoo may not have
+    # today's close yet when the script runs (e.g. delays after market close).
+    # If the latest new_date has no data, don't advance asof to it.
+    if not backfill_mode and new_dates:
+        latest = new_dates[-1]
+        # Check liquid symbols that should have data if market was open
+        checks, have_data = 0, 0
+        for sym in ['SPY', 'AAPL', 'MSFT', 'VOO', 'QQQ']:
+            p = os.path.join(DATA_DIR, fname(sym))
+            if not os.path.exists(p):
+                continue
+            try:
+                v = json.load(open(p))
+                d = v.get('d') or []
+                # daily_days and v['d'] are aligned; check the last position
+                # which corresponds to the latest date
+                if d and d[-1] is not None:
+                    have_data += 1
+                checks += 1
+            except Exception:
+                pass
+        if checks > 0 and have_data == 0:
+            log(f'WARNING: {latest} has no market data yet (Yahoo delay?). '
+                f'Keeping asof at {daily_days[-2] if len(daily_days) > 1 else asof}.')
+            # Trim the empty date from calendars
+            if daily_days and daily_days[-1] == latest:
+                daily_days = daily_days[:-1]
+            new_dates = new_dates[:-1]
+            asof = daily_days[-1] if daily_days else asof
+            log(f'asof corrected to {asof}')
+        elif checks > 0:
+            log(f'verified {latest}: {have_data}/{checks} liquid symbols have data')
+
     # In backfill mode, check whether we actually finished. If not, push
     # what we have and exit 0 -- the next run resumes instead of restarting.
     if backfill_mode:

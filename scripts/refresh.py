@@ -767,6 +767,10 @@ def main():
         else:
             funds[sym] = qf
 
+    # Historical fundamentals: snapshot today's key metrics for trend views.
+    # Stored as v['fh'] = list of {d: date, pe, eps, yield, pb, mcap, ...}.
+    # Bounded to last 365 snapshots to avoid file bloat.
+    today_s = today_et.isoformat()
     for sym, f in funds.items():
         p = os.path.join(DATA_DIR, fname(sym))
         if os.path.exists(p):
@@ -777,6 +781,23 @@ def main():
                 existing = v.get('f') or {}
                 existing.update(f)
                 v['f'] = existing
+                # Append historical snapshot
+                fh = v.get('fh') or []
+                # Skip if today's snapshot already exists
+                if not fh or fh[-1].get('d') != today_s:
+                    snap = {'d': today_s}
+                    for k in ('pe', 'forwardPE', 'eps', 'forwardEPS', 'yield',
+                              'beta', 'mcap', 'pb', 'debtToEquity', 'fcf',
+                              'roe', 'profitMargin'):
+                        if f.get(k) is not None:
+                            snap[k] = f[k]
+                    # Only store if we have at least one metric
+                    if len(snap) > 1:
+                        fh.append(snap)
+                        # Keep last 365
+                        if len(fh) > 365:
+                            fh = fh[-365:]
+                        v['fh'] = fh
                 json.dump(v, open(p, 'w'), separators=(',', ':'))
             except Exception:
                 pass

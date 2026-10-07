@@ -636,10 +636,14 @@ renderWatchlists();render();
     if(!wantBench){try{var sv=JSON.parse(localStorage.getItem('onechart-state')||'null');wantBench=!!(sv&&sv.benchmark)}catch(e){}}
     if(wantBench&&uni.tickers['^GSPC']&&syms.indexOf('^GSPC')<0)syms.push('^GSPC');
     return Promise.all(syms.map(function(s){
-      return fetch('data/'+encodeURIComponent(s)+'.json').then(function(r){return r.ok?r.json():null}).then(function(v){if(v)window.SYMDATA[s]=v}).catch(function(){});
+      return fetch('data/'+encodeURIComponent(s)+'.json').then(function(r){return r.ok?r.json():null}).then(function(v){if(v)window.SYMDATA[s]=v}).catch(function(e){window._fetchErr=(window._fetchErr||'')+s+':'+(e&&e.message)+';';});
     })).then(function(){
       if(el.parentNode)el.parentNode.removeChild(el);
-      window.__initApp();
+      try {
+        window.__initApp();
+      } catch(e) {
+        document.body.innerHTML='<div style="padding:40px;font-family:monospace;color:red"><h2>Init Error</h2><pre>'+String(e&&e.stack||e)+'</pre><p>Fetch errors: '+(window._fetchErr||'none')+'</p><p>SYMDATA keys: '+Object.keys(window.SYMDATA||{}).join(',')+'</p></div>';
+      }
     });
   }).catch(function(err){
     el.textContent='Could not load universe.json \u2014 make sure it is in the same folder as this HTML file. ('+err.message+')';

@@ -103,7 +103,9 @@ def git_push_progress(msg):
 
 
 def fname(sym):
-    return urllib.parse.quote(sym, safe='') + '.json'
+    # Use symbol directly; GitHub Pages decodes URL-encoded fetch paths,
+    # so on-disk names must match the decoded form (e.g. ^GSPC.json, not %5EGSPC.json)
+    return sym + '.json'
 
 
 def sym_from_fname(fn):

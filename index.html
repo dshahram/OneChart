@@ -52,6 +52,7 @@
     .range-seg{flex-wrap:wrap;justify-content:center}
     .seg-wrap{display:grid;gap:5px;justify-items:start}.seg-label{font:500 9px 'DM Mono',monospace;color:var(--muted);padding-left:3px;text-transform:uppercase;letter-spacing:.05em}
     .control-deck{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 14px;align-items:center}
+    .chart-options{background:rgba(255,255,255,0.03);border:1px solid var(--line);border-radius:10px;padding:10px 14px}.chart-options .control-label{font:600 10px 'DM Mono',monospace;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-right:4px}
     .control-block{display:flex;align-items:center;gap:8px;min-height:42px;padding:5px 7px;background:var(--surface);border:1px solid var(--line);border-radius:10px}
     .control-label{font:500 10px 'DM Mono',monospace;color:var(--muted);padding-left:3px;text-transform:uppercase;letter-spacing:.05em}
     .plain-btn,.file-btn{border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:7px 10px;font:500 11px 'DM Mono',monospace;white-space:nowrap}
@@ -162,11 +163,18 @@
       <button class="active" data-view="indexed" aria-pressed="true">% change</button><button data-view="price" aria-pressed="false">Actual prices</button><button data-view="growth" aria-pressed="false">Growth of $10k</button>
     </div></div>
     <div class="seg-wrap" id="contribWrap" hidden><span class="seg-label">Contributions</span><div class="contrib-row"><label>$<input id="contribInitial" type="number" min="0" step="100" value="10000" aria-label="Initial investment"></label><span>start +</span><label>$<input id="contribAmount" type="number" min="0" step="50" value="0" aria-label="Recurring contribution"></label><select id="contribCadence" aria-label="Contribution cadence"><option value="monthly">/ month</option><option value="quarterly">/ quarter</option><option value="annual">/ year</option></select></div></div>
-    <div class="seg-wrap"><span class="seg-label">Dividends</span><div class="seg" id="divToggle" aria-label="Dividend reinvestment"><button class="active" data-reinvest="0" aria-pressed="true">Price only</button><button data-reinvest="1" aria-pressed="false">Reinvested</button></div></div><div class="seg-wrap"><span class="seg-label metric-help" data-tip="Nominal: actual dollar amounts at the time. Real: adjusted for inflation using CPI, shown in today's purchasing power.">Dollars</span><div class="seg" aria-label="Inflation adjustment"><button class="active" data-real="0" aria-pressed="true">Nominal</button><button data-real="1" aria-pressed="false">Real</button></div></div>
+
+  </section>
+  <section class="control-deck chart-options" aria-label="Chart options">
+    <span class="control-label">Chart options</span>
+    <div class="seg-wrap"><span class="seg-label">Dividends</span><div class="seg" id="divToggle" aria-label="Dividend reinvestment"><button class="active" data-reinvest="0" aria-pressed="true">Price only</button><button data-reinvest="1" aria-pressed="false">Reinvested</button></div></div>
+    <div class="seg-wrap"><span class="seg-label metric-help" data-tip="Nominal: actual dollar amounts at the time. Real: adjusted for inflation using CPI, shown in today\'s purchasing power.">Dollars</span><div class="seg" aria-label="Inflation adjustment"><button class="active" data-real="0" aria-pressed="true">Nominal</button><button data-real="1" aria-pressed="false">Real</button></div></div>
+    <div class="control-block"><button class="plain-btn" id="logScaleBtn" aria-pressed="false" title="Logarithmic y-axis (equal % moves look equal)">Log scale</button></div>
+    <div class="control-block"><button class="plain-btn" id="benchmarkBtn" aria-pressed="false">+ S&amp;P 500 benchmark</button></div>
   </section>
   <section class="control-deck" aria-label="Analysis controls">
     <div class="control-block"><span class="control-label">Gesture</span><div class="seg"><button class="active" data-tool="pan">Pan</button><button data-tool="measure">Measure</button></div><button class="plain-btn" id="resetView">Reset view</button></div>
-    <div class="control-block"><button class="plain-btn" id="benchmarkBtn" aria-pressed="false">+ S&amp;P 500 benchmark</button></div><div class="control-block"><button class="plain-btn" id="copyLinkBtn" title="Copy a link to this exact view">Copy link</button></div><div class="control-block"><button class="plain-btn" id="logScaleBtn" aria-pressed="false" title="Logarithmic y-axis (equal % moves look equal)">Log scale</button></div>
+    <div class="control-block"><button class="plain-btn" id="copyLinkBtn" title="Copy a link to this exact view">Copy link</button></div>
     <div class="control-block"><span class="control-label">Custom</span><label class="date-field">From <input id="startDate" type="date" aria-label="Custom start date"></label><label class="date-field">To <input id="endDate" type="date" aria-label="Custom end date"></label><button class="plain-btn" id="applyDates">Apply</button></div>
   </section>
   <section class="watchbar" aria-label="Watchlists">

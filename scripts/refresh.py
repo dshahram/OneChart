@@ -20,6 +20,7 @@ import requests
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(ROOT, 'data')
 UNI_PATH = os.path.join(ROOT, 'universe.json')
+FAILED_SYMS_PATH = os.path.join(ROOT, 'failed_symbols.json')
 
 UA = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'}
 ET_Z = ZoneInfo('America/New_York')
@@ -472,6 +473,14 @@ def main():
             old_cpi = u.get('cpi') or []
         except Exception:
             pass
+    # Known-junk symbols that permanently fail backfill (e.g. bad preferred-stock
+    # tickers). Excluded from the backfill trigger so daily updates aren't blocked.
+    failed_syms = set()
+    if os.path.exists(FAILED_SYMS_PATH):
+        try:
+            failed_syms = set(json.load(open(FAILED_SYMS_PATH)))
+        except Exception:
+            pass
 
     today_et = datetime.now(ET_Z).date()
     lwd = today_et
@@ -502,7 +511,7 @@ def main():
         weekly_weeks = [(fri - timedelta(weeks=i)).isoformat()
                         for i in range(TARGET_WEEKS - 1, -1, -1)]
         to_process = sorted(universe_syms)
-    elif not universe_syms.issubset(existing):
+    elif not (universe_syms - failed_syms).issubset(existing):
         backfill_mode, resume_mode = True, True
         log('BACKFILL MODE (resume)')
         if not daily_days or not weekly_weeks:
@@ -516,7 +525,7 @@ def main():
                             for i in range(TARGET_WEEKS - 1, -1, -1)]
         else:
             asof = asof or lwd_s
-        to_process = sorted(universe_syms - existing)
+        to_process = sorted((universe_syms - failed_syms) - existing)
         log(f'{len(existing)} already done, {len(to_process)} remaining')
     else:
         backfill_mode, resume_mode = False, False
@@ -633,6 +642,13 @@ def main():
     log(f'symbols: {ok} ok, {len(failed)} failed')
     if failed:
         log('  failed sample:', failed[:10])
+        # Persist newly failed symbols so they don't trigger backfill mode forever
+        try:
+            new_failed = (failed_syms | set(failed)) - set()
+            json.dump(sorted(new_failed), open(FAILED_SYMS_PATH, 'w'))
+            log(f'  tracked {len(new_failed)} known-failed symbols')
+        except Exception as e:
+            log(f'  failed to save failed_symbols: {e}')
 
     # Verify the latest date actually has market data. Yahoo may not have
     # today's close yet when the script runs (e.g. delays after market close).

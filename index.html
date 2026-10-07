@@ -641,6 +641,12 @@ renderWatchlists();render();
       if(el.parentNode)el.parentNode.removeChild(el);
       try {
         window.__initApp();
+        setTimeout(function(){
+          var s=document.createElement('div');
+          s.style.cssText='position:fixed;top:0;left:0;background:yellow;color:black;padding:10px;z-index:99999;font-family:monospace;font-size:12px';
+          s.textContent='SYMDATA: '+Object.keys(window.SYMDATA||{}).join(',')+' | FetchErr: '+(window._fetchErr||'none');
+          document.body.appendChild(s);
+        },1000);
       } catch(e) {
         document.body.innerHTML='<div style="padding:40px;font-family:monospace;color:red"><h2>Init Error</h2><pre>'+String(e&&e.stack||e)+'</pre><p>Fetch errors: '+(window._fetchErr||'none')+'</p><p>SYMDATA keys: '+Object.keys(window.SYMDATA||{}).join(',')+'</p></div>';
       }

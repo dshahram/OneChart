@@ -52,7 +52,8 @@
     .range-seg{flex-wrap:wrap;justify-content:center}
     .seg-wrap{display:grid;gap:5px;justify-items:start}.seg-label{font:500 9px 'DM Mono',monospace;color:var(--muted);padding-left:3px;text-transform:uppercase;letter-spacing:.05em}
     .control-deck{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 14px;align-items:center}
-    .chart-options{background:rgba(255,255,255,0.03);border:1px solid var(--line);border-radius:10px;padding:10px 14px}.chart-options .control-label{font:600 10px 'DM Mono',monospace;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-right:4px}
+    .chart-options{background:rgba(255,255,255,0.03);border:1px solid var(--line);border-radius:10px;padding:10px 14px}
+    .first-run{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 14px;margin-bottom:12px;background:rgba(255,255,255,0.04);border:1px dashed var(--line);border-radius:10px}.first-run-label{font:500 11px 'DM Mono',monospace;color:var(--muted)}.first-run-dismiss{margin-left:auto}.chart-options .control-label{font:600 10px 'DM Mono',monospace;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-right:4px}
     .control-block{display:flex;align-items:center;gap:8px;min-height:42px;padding:5px 7px;background:var(--surface);border:1px solid var(--line);border-radius:10px}
     .control-label{font:500 10px 'DM Mono',monospace;color:var(--muted);padding-left:3px;text-transform:uppercase;letter-spacing:.05em}
     .plain-btn,.file-btn{border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:7px 10px;font:500 11px 'DM Mono',monospace;white-space:nowrap}
@@ -188,6 +189,13 @@
   <div id="symbols" class="symbols" aria-label="Selected symbols"></div>
 
   <section class="chart-card" aria-labelledby="chartHeading">
+    <div id="firstRun" class="first-run" hidden>
+      <span class="first-run-label">Try an example:</span>
+      <button class="plain-btn" data-example="AAPL,MSFT,GOOGL,NVDA">Tech giants</button>
+      <button class="plain-btn" data-example="BTC-USD,VOO">Bitcoin vs S&amp;P 500</button>
+      <button class="plain-btn" data-example="SCHD,VYM">Dividend payers</button>
+      <button class="plain-btn first-run-dismiss" id="firstRunDismiss" title="Dismiss">×</button>
+    </div>
     <div class="chart-head">
       <div><div class="chart-context" id="chartContext">VOO · QQQM · VTI — Last 5 years</div><div class="chart-title" id="chartHeading">Relative performance</div><div class="chart-sub" id="chartSub">REBASED AT SELECTED START</div></div>
       <div class="stamp" id="dataAsOf">Data as of —</div>
@@ -410,7 +418,8 @@ function renderTable(){
 }
 function detailMetric(label,value,className=''){return '<div class="detail-metric"><label>'+escapeHTML(label)+'</label><b'+(className?' class="'+className+'"':'')+'>'+escapeHTML(value)+'</b></div>'}
 function renderAllVisual(){persistState();renderContextLine();renderChart();renderStats();renderTable();renderHolding();renderNews()}
-function persistState(){try{localStorage.setItem('onechart-v1',JSON.stringify({selected:selected,range:range,viewMode:viewMode,reinvest:reinvest,benchmark:benchmark,watchlists:watchlists,realMode:realMode,contrib:contrib,logScale:logScale,blends:blends}))}catch(e){}syncHash()}function syncHash(){try{var p='s='+selected.map(encodeURIComponent).join(',')+'&r='+range+'&v='+viewMode+'&reinv='+(reinvest?1:0)+'&bench='+(benchmark?1:0)+'&real='+(realMode?1:0)+'&log='+(logScale?1:0);history.replaceState(null,'','#'+p)}catch(e){}}
+function persistState(){try{localStorage.setItem('onechart-v1',JSON.stringify({selected:selected,range:range,viewMode:viewMode,reinvest:reinvest,benchmark:benchmark,watchlists:watchlists,realMode:realMode,contrib:contrib,logScale:logScale,blends:blends}))}catch(e){}syncHash()}
+function initFirstRun(){try{if(localStorage.getItem('onechart-v1'))return}catch(e){return}var fr=document.getElementById('firstRun');if(!fr)return;fr.hidden=false;fr.querySelectorAll('[data-example]').forEach(function(btn){btn.addEventListener('click',function(){var syms=btn.dataset.example.split(',');setSelected(syms,function(){resetView();render()});fr.hidden=true})});var dismiss=document.getElementById('firstRunDismiss');if(dismiss)dismiss.addEventListener('click',function(){fr.hidden=true})}function syncHash(){try{var p='s='+selected.map(encodeURIComponent).join(',')+'&r='+range+'&v='+viewMode+'&reinv='+(reinvest?1:0)+'&bench='+(benchmark?1:0)+'&real='+(realMode?1:0)+'&log='+(logScale?1:0);history.replaceState(null,'','#'+p)}catch(e){}}
 function blendId(name){const slug=name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'')||'blend';return'blend:'+slug}
 function getBlend(id){return blends.find(b=>b.id===id)}
 function symLabel(sym){const b=sym.startsWith('blend:')?getBlend(sym):null;return b?b.name+' \u25c8':sym}
@@ -616,6 +625,7 @@ var rt=document.querySelector('[data-sort="ret"]');if(rt)rt.textContent=reinvest
 }}catch(e){}
 /* restored state above */
 renderWatchlists();render();
+initFirstRun();
 
 
 };

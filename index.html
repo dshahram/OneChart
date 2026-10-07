@@ -621,7 +621,7 @@ renderWatchlists();render();
   if(document.body){document.body.appendChild(el);}else{document.addEventListener('DOMContentLoaded',function(){document.body.appendChild(el);});}
   function hashParam(k){try{var m=location.hash.replace(/^#/,'').match(new RegExp('(?:^|&)'+k+'=([^&]*)'));return m?decodeURIComponent(m[1]):null}catch(e){return null}}
   function hashSyms(){var s=hashParam('s');return s?s.split(',').map(function(x){return x.trim().toUpperCase()}).filter(Boolean).slice(0,12):null}
-  function savedSyms(){try{var sv=JSON.parse(localStorage.getItem('onechart-state')||'null');if(sv&&Array.isArray(sv.selected)&&sv.selected.length)return sv.selected.slice(0,12)}catch(e){}return null}
+  function savedSyms(){try{var sv=JSON.parse(localStorage.getItem('onechart-v1')||'null');if(sv&&Array.isArray(sv.selected)&&sv.selected.length)return sv.selected.slice(0,12)}catch(e){}try{var sv2=JSON.parse(localStorage.getItem('onechart-state')||'null');if(sv2&&Array.isArray(sv2.selected)&&sv2.selected.length)return sv2.selected.slice(0,12)}catch(e){}return null}
   window.__hashParam=hashParam;
   fetch('universe.json').then(function(r){if(!r.ok)throw new Error('HTTP '+r.status_code);return r.json()}).then(function(uni){
     window.UNIVERSE=uni;

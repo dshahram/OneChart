@@ -920,10 +920,23 @@ def main():
 
     cpi = fetch_cpi() or old_cpi
 
+    # Top by market cap: 5 largest symbols. Used by the frontend for the
+    # bare-URL default view (recognizable names).
+    top_mcap = []
+    try:
+        ranked = sorted(
+            (( (f or {}).get('mcap') or 0, sym) for sym, f in funds.items()),
+            reverse=True)
+        top_mcap = [s for _, s in ranked[:5] if _ > 0]
+        log(f'top mcap: {top_mcap}')
+    except Exception as e:
+        log(f'top mcap failed: {e}')
+
     uni = {'asof': asof, 'daily_days': daily_days, 'weekly_weeks': weekly_weeks,
            'cpi': cpi, 'tickers': tickers,
            'fundamentals_asof': today_et.isoformat(),
-           'note': f'{len(tickers)} symbols; data as of {asof}'}
+           'top_mcap': top_mcap,
+           'note': f'{len(tickers)} symbols; data as of {asof}' }
     json.dump(uni, open(UNI_PATH, 'w'), separators=(',', ':'))
     nfiles = len(os.listdir(DATA_DIR))
     log(f'universe.json: {len(tickers)} tickers, asof {asof}, {nfiles} data files')

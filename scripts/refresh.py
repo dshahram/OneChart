@@ -921,13 +921,26 @@ def main():
     cpi = fetch_cpi() or old_cpi
 
     # Top by market cap: 5 largest symbols. Used by the frontend for the
-    # bare-URL default view (recognizable names).
+    # bare-URL default view (recognizable names). Deduplicates dual-class
+    # shares (e.g. keeps GOOGL, drops GOOG).
     top_mcap = []
     try:
+        # symbol -> canonical: if we've already taken the canonical, skip the dup
+        dupes = {'GOOG': 'GOOGL', 'BRK.B': 'BRK.A', 'FOX': 'FOXA'}
         ranked = sorted(
             (( (f or {}).get('mcap') or 0, sym) for sym, f in funds.items()),
             reverse=True)
-        top_mcap = [s for _, s in ranked[:5] if _ > 0]
+        seen_canonical = set()
+        for mcap, sym in ranked:
+            if mcap <= 0:
+                continue
+            canon = dupes.get(sym, sym)
+            if canon in seen_canonical:
+                continue
+            seen_canonical.add(canon)
+            top_mcap.append(sym)
+            if len(top_mcap) >= 5:
+                break
         log(f'top mcap: {top_mcap}')
     except Exception as e:
         log(f'top mcap failed: {e}')

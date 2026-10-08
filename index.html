@@ -256,7 +256,7 @@ const PALETTE=['#f34848','#48f3f3','#9ef348','#9e48f3','#f3c848','#4873f3','#48f
 const COLORS=Object.fromEntries(SYMBOLS.map((s,i)=>[s,PALETTE[i%PALETTE.length]]));
 const $=s=>document.querySelector(s),svgNS='http://www.w3.org/2000/svg',DAY=86400,GROWTH_BASE=10000;
 const dailyCache={},weeklyCache={},intradayCache={};
-let selected=(window.UNIVERSE&&window.UNIVERSE.top_mcap&&window.UNIVERSE.top_mcap.length?window.UNIVERSE.top_mcap.slice(0,5):['VOO','QQQM','VTI']),range='60',viewMode='indexed',toolMode='pan',benchmark=false,menuIndex=-1,reinvest=false;
+let selected=(window.UNIVERSE&&window.UNIVERSE.top_mcap&&window.UNIVERSE.top_mcap.length?window.UNIVERSE.top_mcap.slice(0,5):['VOO','QQQM','VTI']),range='12',viewMode='indexed',toolMode='pan',benchmark=false,menuIndex=-1,reinvest=false;
 let contrib={initial:10000,amount:0,cadence:'monthly'};let logScale=false;let holdingYears=5;let blends=[];let customRange=null,customRangeLabel='',viewRange=null,measure=null,dragState=null,watchlists=[],sortKey='ret',sortDir=-1,expandedSymbols=new Set();
 function lastFiniteIndex(values){for(let i=values.length-1;i>=0;i--)if(Number.isFinite(values[i]))return i;return 0}
 const AS_OF=DAILY_TIMES[DAILY_TIMES.length-1];

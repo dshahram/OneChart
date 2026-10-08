@@ -612,12 +612,13 @@ if(typeof sv.benchmark==='boolean')benchmark=sv.benchmark;
 if(sv.contrib&&typeof sv.contrib==='object'){contrib.initial=Math.max(0,Number(sv.contrib.initial)||0);contrib.amount=Math.max(0,Number(sv.contrib.amount)||0);if(['monthly','quarterly','annual'].indexOf(sv.contrib.cadence)>=0)contrib.cadence=sv.contrib.cadence;var _ci=document.getElementById('contribInitial'),_ca=document.getElementById('contribAmount'),_cc=document.getElementById('contribCadence');if(_ci){_ci.value=contrib.initial;_ca.value=contrib.amount;_cc.value=contrib.cadence}}if(typeof sv.logScale==='boolean'){logScale=sv.logScale;var _lb=document.getElementById('logScaleBtn');if(_lb){_lb.classList.toggle('active',logScale);_lb.setAttribute('aria-pressed',String(logScale))}}if(typeof sv.realMode==='boolean'){realMode=sv.realMode;document.querySelectorAll('[data-real]').forEach(function(x){var a=(x.dataset.real==='1')===realMode;x.classList.toggle('active',a);x.setAttribute('aria-pressed',String(a))})}
 if(Array.isArray(sv.watchlists))watchlists=sv.watchlists.filter(function(w){return w&&typeof w.name==='string'&&Array.isArray(w.symbols)});
 if(Array.isArray(sv.blends))blends=sv.blends.filter(function(b){return b&&typeof b.id==='string'&&typeof b.name==='string'&&Array.isArray(b.parts)});
+}}catch(e){}
+// Always sync button states with current values (not just when restoring state)
 document.querySelectorAll('[data-range]').forEach(function(x){var a=x.dataset.range===range;x.classList.toggle('active',a);x.setAttribute('aria-pressed',String(a))});
 document.querySelectorAll('[data-view]').forEach(function(x){var a=x.dataset.view===viewMode;x.classList.toggle('active',a);x.setAttribute('aria-pressed',String(a))});
 document.querySelectorAll('[data-reinvest]').forEach(function(x){var a=(x.dataset.reinvest==='1')===reinvest;x.classList.toggle('active',a);x.setAttribute('aria-pressed',String(a))});
 var bb=$('#benchmarkBtn');if(bb){bb.classList.toggle('active',benchmark);bb.setAttribute('aria-pressed',String(benchmark));bb.textContent=benchmark?'\u2212 S&P 500 benchmark':'+ S&P 500 benchmark'}
 var rt=document.querySelector('[data-sort="ret"]');if(rt)rt.textContent=reinvest?'Total return \u2193':'Price return \u2193';
-}}catch(e){}
 /* restored state above */
 renderWatchlists();render();
 

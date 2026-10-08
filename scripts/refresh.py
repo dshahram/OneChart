@@ -392,9 +392,34 @@ def backfill_one(s, crumb, sym, name, cls, daily_days, weekly_weeks):
     return v, crumb
 
 
-def update_symbol(s, crumb, sym, v, new_daily_days, cut_idx, drop,
-                  week_groups_days, new_dates, prev_last, fetch_intraday=True):
-    """Roll one symbol forward. Calendars precomputed by caller. Returns (ok, crumb)."""
+def roll_weekly(v, new_daily_days, cut_idx, drop, week_groups_days):
+    """Recompute the weekly tail from the (already rolled-forward) daily
+    series: frozen head + resampled tail (labels handled by caller).
+    Returns (w, wu)."""
+    day_index = {ds: i for i, ds in enumerate(new_daily_days)}
+    new_w, new_wu = [], []
+    for ds_list in week_groups_days:
+        c = cr_ = None
+        for ds in ds_list:
+            p = v['d'][day_index[ds]]
+            if p is not None:
+                c = p
+            pr = v['u'][day_index[ds]]
+            if pr is not None:
+                cr_ = pr
+        new_w.append(c)
+        new_wu.append(cr_)
+    fw = v['w'][:cut_idx] + new_w
+    fwu = v['wu'][:cut_idx] + new_wu
+    if drop:
+        fw, fwu = fw[drop:], fwu[drop:]
+    return fw, fwu
+
+
+def update_symbol(s, crumb, sym, v, new_dates, prev_last,
+                  fetch_intraday=True):
+    """Fetch new daily bars and append them (weekly resample is done by the
+    caller via roll_weekly). Returns (ok, crumb)."""
     today_et = datetime.now(ET_Z).date().isoformat()
     p1 = int(datetime.fromisoformat(prev_last).replace(tzinfo=timezone.utc).timestamp()) + 86400
     p2 = int(datetime.now(timezone.utc).timestamp()) + 86400
@@ -422,25 +447,6 @@ def update_symbol(s, crumb, sym, v, new_daily_days, cut_idx, drop,
         v['u'].append(rm.get(dt, am.get(dt)))
     v['d'] = v['d'][-N_DAILY:]
     v['u'] = v['u'][-N_DAILY:]
-    # weekly values: frozen head + resampled tail (labels handled by caller)
-    day_index = {ds: i for i, ds in enumerate(new_daily_days)}
-    new_w, new_wu = [], []
-    for ds_list in week_groups_days:
-        c = cr_ = None
-        for ds in ds_list:
-            p = v['d'][day_index[ds]]
-            if p is not None:
-                c = p
-            pr = v['u'][day_index[ds]]
-            if pr is not None:
-                cr_ = pr
-        new_w.append(c)
-        new_wu.append(cr_)
-    fw = v['w'][:cut_idx] + new_w
-    fwu = v['wu'][:cut_idx] + new_wu
-    if drop:
-        fw, fwu = fw[drop:], fwu[drop:]
-    v['w'], v['wu'] = fw, fwu
     if fetch_intraday:
         res, err, crumb = yahoo_chart(s, crumb, sym, 'range=5d&interval=15m')
         if res is not None:
@@ -489,6 +495,41 @@ def main():
     while lwd.weekday() >= 5:
         lwd -= timedelta(days=1)
     lwd_s = lwd.isoformat()
+
+    # Verify the latest weekday actually has market data BEFORE any
+    # per-symbol work. Yahoo may not have published today's close yet when
+    # the script runs; stepping lwd back here keeps per-symbol arrays,
+    # calendars, and asof consistent (trimming the calendar after the fact
+    # would leave dateless trailing entries and misalign the next run).
+    # If Yahoo itself is unreachable, proceed unchanged -- per-symbol calls
+    # fail gracefully and are retried on the next run.
+    for _ in range(3):
+        vs, vc = new_session(), None
+        try:
+            vc = refresh_crumb(vs)
+        except Exception:
+            vc = None
+        if not vc:
+            vs.close()
+            break
+        res, _err, _c = yahoo_chart(vs, vc, 'SPY', 'range=5d&interval=1d')
+        vs.close()
+        if res is None:
+            break  # Yahoo unreachable; don't mistake it for missing data
+        ts = res.get('timestamp') or []
+        closes = ((res.get('indicators') or {}).get('quote') or [{}])[0].get('close') or []
+        found = False
+        for i, tt in enumerate(ts):
+            if datetime.fromtimestamp(tt, tz=timezone.utc).strftime('%Y-%m-%d') == lwd_s:
+                found = i < len(closes) and closes[i] is not None
+                break
+        if found:
+            break
+        log(f'WARNING: {lwd_s} has no market data yet (Yahoo delay?). Stepping back a day.')
+        lwd -= timedelta(days=1)
+        while lwd.weekday() >= 5:
+            lwd -= timedelta(days=1)
+        lwd_s = lwd.isoformat()
 
     # existing data files -> symbols
     existing = set()
@@ -544,12 +585,35 @@ def main():
             if new_dates:
                 # Update calendars for the daily roll-forward
                 new_daily_days = (daily_days + new_dates)[-N_DAILY:]
-                # (weekly recompute happens in daily-update branch; for resume
-                # mode we keep it simple and let next daily run handle weeks)
+                # Weekly resample plan (mirrors the daily-update branch).
+                # update_symbol needs cut_idx/drop/week_groups_days and
+                # placeholders would corrupt the weekly series, so compute
+                # the real plan here instead of deferring it.
+                cutoff = (date.fromisoformat(new_dates[-1]) - timedelta(days=70)).isoformat()
+                cut_idx = next((i for i, w in enumerate(weekly_weeks) if w >= cutoff), 0)
+                span_start = weekly_weeks[:cut_idx][-1] if cut_idx else cutoff
+                span_days = [ds for ds in new_daily_days if ds > span_start]
+                groups = {}
+                for ds in span_days:
+                    wk = date.fromisoformat(ds).isocalendar()[:2]
+                    groups.setdefault(wk, []).append(ds)
+                week_groups_days = [groups[wk] for wk in sorted(groups)]
+                # Friday of each ISO week as the stable label
+                new_weeks = [date.fromisocalendar(wk[0], wk[1], 5).isoformat()
+                             for wk in sorted(groups)]
+                new_weekly_weeks = weekly_weeks[:cut_idx] + new_weeks
+                drop = 0
+                if len(new_weekly_weeks) > TARGET_WEEKS:
+                    drop = len(new_weekly_weeks) - TARGET_WEEKS
+                    new_weekly_weeks = new_weekly_weeks[drop:]
                 daily_days = new_daily_days
+                weekly_weeks = new_weekly_weeks
                 asof = new_dates[-1]
-                # Add existing symbols to to_process for daily update
-                to_process = sorted(set(to_process) | existing)
+                # Add existing symbols to to_process for daily update.
+                # Intersect with the current universe: a symbol with a data
+                # file may be absent from this run's universe fetch (fetch
+                # variation / delisting), and work() would KeyError on it.
+                to_process = sorted((set(to_process) | existing) & universe_syms)
                 log(f'including {len(existing)} existing symbols for daily update')
     else:
         backfill_mode, resume_mode = False, False
@@ -629,26 +693,45 @@ def main():
     ok, failed = 0, []
 
     def work(sym):
-        name, cls = tickers[sym]
-        if sym not in existing:
-            v, _c = backfill_one(s, crumb, sym, name, cls, daily_days, weekly_weeks)
-            if v is None:
-                return sym, False
-            write_symbol(sym, v)
-            return sym, True
+        if sym in tickers:
+            name, cls = tickers[sym]
+            if sym not in existing:
+                v, _c = backfill_one(s, crumb, sym, name, cls, daily_days, weekly_weeks)
+                if v is None:
+                    return sym, False
+                write_symbol(sym, v)
+                return sym, True
         v = read_symbol(sym)
         if v is None:
             return sym, False
         if new_dates:
-            ok_, _c = update_symbol(s, crumb, sym, v, new_daily_days, cut_idx, drop,
-                                   week_groups_days, new_dates, prev_last,
-                                   fetch_intraday=(sym in intraday_syms))
-            if not ok_:
-                return sym, False
+            if sym not in tickers:
+                # Present in data files but absent from this run's universe
+                # fetch (fetch variation or delisting): carry forward with
+                # Nones so the arrays stay aligned with the global calendar.
+                for _ in new_dates:
+                    v['d'].append(None)
+                    v['u'].append(None)
+                v['d'] = v['d'][-N_DAILY:]
+                v['u'] = v['u'][-N_DAILY:]
+            else:
+                ok_, _c = update_symbol(s, crumb, sym, v, new_dates, prev_last,
+                                       fetch_intraday=(sym in intraday_syms))
+                if not ok_:
+                    return sym, False
+            v['w'], v['wu'] = roll_weekly(v, new_daily_days, cut_idx, drop,
+                                         week_groups_days)
             write_symbol(sym, v)
         return sym, True
 
-    all_syms = to_process + (to_backfill if not backfill_mode else [])
+    # Symbols with data files but missing from this run's universe fetch.
+    # (Pure-daily mode deletes them as delisted above; in backfill/resume
+    # mode we carry them forward instead.)
+    carry_syms = sorted(existing - universe_syms) if backfill_mode else []
+    if carry_syms:
+        log(f'{len(carry_syms)} symbols absent from universe fetch; carrying forward')
+
+    all_syms = to_process + carry_syms + (to_backfill if not backfill_mode else [])
     with ThreadPoolExecutor(max_workers=10) as ex:
         futs = {ex.submit(work, sym): sym for sym in all_syms}
         done = 0
@@ -674,9 +757,11 @@ def main():
         except Exception as e:
             log(f'  failed to save failed_symbols: {e}')
 
-    # Verify the latest date actually has market data. Yahoo may not have
-    # today's close yet when the script runs (e.g. delays after market close).
-    # If the latest new_date has no data, don't advance asof to it.
+    # Post-run sanity check: the latest new date should have market data.
+    # The pre-loop check excludes a dateless latest day upfront, so this is
+    # only a tripwire. It deliberately never trims calendars or arrays:
+    # trimming the calendar after per-symbol writes would leave every symbol
+    # file one entry longer than the calendar and misalign the next run.
     if new_dates and (not backfill_mode or resume_mode):
         latest = new_dates[-1]
         # Check liquid symbols that should have data if market was open
@@ -696,14 +781,8 @@ def main():
             except Exception:
                 pass
         if checks > 0 and have_data == 0:
-            log(f'WARNING: {latest} has no market data yet (Yahoo delay?). '
-                f'Keeping asof at {daily_days[-2] if len(daily_days) > 1 else asof}.')
-            # Trim the empty date from calendars
-            if daily_days and daily_days[-1] == latest:
-                daily_days = daily_days[:-1]
-            new_dates = new_dates[:-1]
-            asof = daily_days[-1] if daily_days else asof
-            log(f'asof corrected to {asof}')
+            log(f'ERROR: {latest} has no market data in written files. '
+                f'Investigate before the next run.')
         elif checks > 0:
             log(f'verified {latest}: {have_data}/{checks} liquid symbols have data')
 

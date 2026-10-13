@@ -146,8 +146,11 @@
     .detail-section-head.perf-head{color:#9ece6a}
     .detail-title{margin-bottom:4px}
     .detail-trends .table-wrap{max-height:280px;overflow-y:auto}
-    .trends-table{table-layout:fixed;width:100%}
-    .trends-table th,.trends-table td{width:25%;box-sizing:border-box}
+    .trends-table{width:100%;border-collapse:collapse;table-layout:fixed;font:500 11px 'DM Mono',monospace}
+    .trends-table th,.trends-table td{width:25%;padding:8px 7px;text-align:right;white-space:nowrap;box-sizing:border-box}
+    .trends-table th:first-child,.trends-table td:first-child{text-align:left}
+    .trends-table th{color:var(--muted);font-size:10px;font-weight:500;border-bottom:1px solid var(--line)}
+    .trends-table td{border-top:1px solid var(--line)}
     .group-row th:first-child{border-bottom:none}
     </style>
   <script data-goatcounter="https://onechart.goatcounter.com/count" async src="//gc.zgo.at/count.js"></script>
@@ -432,7 +435,7 @@ function renderTable(){
   document.querySelectorAll('[data-sort]').forEach(b=>{const base={'symbol':'Symbol','latest':(reinvest?'Latest adj. price':'Latest price'),'pe':'P/E','eps':'EPS','yield':'Div yield','beta':'Beta','ret':retLabel(),'cagr':'CAGR','vol':'Ann. volatility','sharpe':'Sharpe','dd':'Max drawdown','recDays':'Recovery','winRate':'Win rate','sma50':'50-day SMA','sma200':'200-day SMA','above50':'% > 50-day SMA','above200':'% > 200-day SMA','ending':'Ending $10,000','excess':'Excess vs S&P'}[b.dataset.sort];b.classList.toggle('active',b.dataset.sort===sortKey);b.textContent=base+(b.dataset.sort===sortKey?(sortDir<0?' ↓':' ↑'):'')})
 }
 function detailMetric(label,value,className=''){return '<div class="detail-metric"><label>'+escapeHTML(label)+'</label><b'+(className?' class="'+className+'"':'')+'>'+escapeHTML(value)+'</b></div>'}
-function fundTrendsHTML(sym){const v=DATA[sym];if(!v||!v.fh||!v.fh.length)return '';const fh=v.fh.slice(-10).reverse();let rows=fh.map(s=>'<tr><td>'+escapeHTML(s.d)+'</td><td>'+fmtFund(s.pe)+'</td><td>'+(Number.isFinite(s.eps)?fmtSignedPlainMoney(s.eps):'—')+'</td><td>'+fmtYield(s.yield)+'</td></tr>').join('');return '<div class="detail-trends"><div class="detail-title" style="margin-top:14px"><b>Fundamentals history</b><span>'+fh.length+' snapshots</span></div><div class="table-wrap"><table class="comparison trends-table"><thead><tr><th>Date</th><th>P/E</th><th>EPS</th><th>Yield</th></tr></thead><tbody>'+rows+'</tbody></table></div><p class="trends-note">Snapshots taken daily. History builds over time.</p></div>'}
+function fundTrendsHTML(sym){const v=DATA[sym];if(!v||!v.fh||!v.fh.length)return '';const fh=v.fh.slice(-10).reverse();let rows=fh.map(s=>'<tr><td>'+escapeHTML(s.d)+'</td><td>'+fmtFund(s.pe)+'</td><td>'+(Number.isFinite(s.eps)?fmtSignedPlainMoney(s.eps):'—')+'</td><td>'+fmtYield(s.yield)+'</td></tr>').join('');return '<div class="detail-trends"><div class="detail-title" style="margin-top:14px"><b>Fundamentals history</b><span>'+fh.length+' snapshots</span></div><div class="table-wrap"><table class="trends-table"><thead><tr><th>Date</th><th>P/E</th><th>EPS</th><th>Yield</th></tr></thead><tbody>'+rows+'</tbody></table></div><p class="trends-note">Snapshots taken daily. History builds over time.</p></div>'}
 
 function renderAllVisual(){persistState();renderContextLine();renderChart();renderStats();renderTable();renderHolding();renderNews()}
 function persistState(){try{localStorage.setItem('onechart-v1',JSON.stringify({selected:selected,range:range,viewMode:viewMode,reinvest:reinvest,benchmark:benchmark,watchlists:watchlists,realMode:realMode,contrib:contrib,logScale:logScale,blends:blends}))}catch(e){}syncHash()}

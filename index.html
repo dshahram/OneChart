@@ -258,7 +258,6 @@
 
 
 <script>
-const DATA_VERSION='20261014';
 window.__initApp=function(){
 
 const UNI=window.UNIVERSE;const DATA=window.SYMDATA;
@@ -268,7 +267,7 @@ let realMode=false;const CPI_MAP={};(function(){const c=UNI.cpi||[];if(c.length)
 const inflFactor=function(t){var d=new Date(t*1000),y=d.getUTCFullYear(),m=d.getUTCMonth()+1;for(var k=0;k<24;k++){var ym=y+'-'+String(m).padStart(2,'0');if(CPI_MAP[ym])return CPI_MAP[ym];m--;if(m<1){m=12;y--}}return 1};
 const SYMCOUNT=Object.keys(UNI.tickers).length.toLocaleString('en-US');
 document.body.innerHTML=document.body.innerHTML.split('SYMCOUNT').join(SYMCOUNT);
-const ensureSyms=syms=>{const missing=[...new Set(syms)].filter(s=>s&&UNI.tickers[s]&&!DATA[s]);if(!missing.length)return Promise.resolve(missing);setStatus('Loading '+missing.join(', ')+'\u2026');return Promise.all(missing.map(s=>fetch('data/'+encodeURIComponent(s)+'.json?v='+DATA_VERSION).then(r=>{if(!r.ok)throw new Error(s);return r.json()}).then(v=>{DATA[s]=v;return s}).catch(()=>null))).then(loaded=>{const ok=loaded.filter(Boolean);if(ok.length)setStatus('');else setStatus('Could not load '+missing.join(', ')+'.',true);return ok})};
+const ensureSyms=syms=>{const missing=[...new Set(syms)].filter(s=>s&&UNI.tickers[s]&&!DATA[s]);if(!missing.length)return Promise.resolve(missing);setStatus('Loading '+missing.join(', ')+'\u2026');return Promise.all(missing.map(s=>fetch('data/'+encodeURIComponent(s)+'.json).then(r=>{if(!r.ok)throw new Error(s);return r.json()}).then(v=>{DATA[s]=v;return s}).catch(()=>null))).then(loaded=>{const ok=loaded.filter(Boolean);if(ok.length)setStatus('');else setStatus('Could not load '+missing.join(', ')+'.',true);return ok})};
 const setSelected=(syms,after)=>{const list=[...new Set(syms)].filter(s=>UNI.tickers[s]);ensureSyms(list).then(()=>{selected=list.filter(s=>DATA[s]);blends.forEach(b=>{if(b.parts.every(p=>DATA[p.sym]))buildBlendData(b)});renderBlends();if(after)after();else{resetView();render()}});};
 
 const SYMBOLS=Object.keys(UNI.tickers).sort((a,b)=>a.localeCompare(b));
@@ -677,7 +676,7 @@ renderWatchlists();render();
     if(!wantBench){try{var sv=JSON.parse(localStorage.getItem('onechart-state')||'null');wantBench=!!(sv&&sv.benchmark)}catch(e){}}
     if(wantBench&&uni.tickers['^GSPC']&&syms.indexOf('^GSPC')<0)syms.push('^GSPC');
     return Promise.all(syms.map(function(s){
-      return fetch('data/'+encodeURIComponent(s)+'.json?v='+DATA_VERSION).then(function(r){return r.ok?r.json():null}).then(function(v){if(v)window.SYMDATA[s]=v}).catch(function(e){window._fetchErr=(window._fetchErr||'')+s+':'+(e&&e.message)+';';});
+      return fetch('data/'+encodeURIComponent(s)+'.json).then(function(r){return r.ok?r.json():null}).then(function(v){if(v)window.SYMDATA[s]=v}).catch(function(e){window._fetchErr=(window._fetchErr||'')+s+':'+(e&&e.message)+';';});
     })).then(function(){
       if(el.parentNode)el.parentNode.removeChild(el);
       try {

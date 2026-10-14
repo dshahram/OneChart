@@ -264,7 +264,7 @@ def fetch_quote_summary(s, crumb, symbols, max_workers=10):
         for _ in range(3):
             try:
                 url = (f'https://query1.finance.yahoo.com/v10/finance/quoteSummary/{urllib.parse.quote(sym, safe="")}'
-                       f'?modules=financialData,defaultKeyStatistics&crumb={urllib.parse.quote(crumb)}')
+                       f'?modules=financialData,defaultKeyStatistics,calendarEvents&crumb={urllib.parse.quote(crumb)}')
                 r = s.get(url, timeout=30)
                 if r.status_code == 401:
                     time.sleep(2)
@@ -291,6 +291,16 @@ def fetch_quote_summary(s, crumb, symbols, max_workers=10):
                             dti = round(float(total_debt) / ni, 2)
                     except (ZeroDivisionError, ValueError):
                         dti = None
+                # Extract earnings date from calendarEvents
+                cal = res.get('calendarEvents') or {}
+                earnings = cal.get('earnings') or {}
+                earn_dates = earnings.get('earningsDate') or []
+                earn_date = None
+                if earn_dates:
+                    # Take the first (most recent) date
+                    fmt = earn_dates[0].get('fmt') if isinstance(earn_dates[0], dict) else None
+                    if fmt:
+                        earn_date = fmt.split(' ')[0]  # Get YYYY-MM-DD part
                 return sym, {
                     # Yahoo returns debtToEquity as a percentage (e.g. 78.445 = 0.78x); normalize to ratio
                     'debtToEquity': (round(float(raw(fd, 'debtToEquity')) / 100, 4)
@@ -300,6 +310,7 @@ def fetch_quote_summary(s, crumb, symbols, max_workers=10):
                     'roe': r2(raw(fd, 'returnOnEquity')),
                     'profitMargin': r2(raw(fd, 'profitMargins')),
                     'dti': dti,
+                    'earnDate': earn_date,
                 }
             except Exception:
                 time.sleep(3)
@@ -377,6 +388,11 @@ def backfill_one(s, crumb, sym, name, cls, daily_days, weekly_weeks):
         return None, crumb
     v['d'] = [am.get(ds) for ds in daily_days]
     v['u'] = [rm.get(ds, am.get(ds)) for ds in daily_days]
+    # 52-week high/low from last 252 trading days (or available)
+    prices_52w = [p for p in v['d'][-252:] if p is not None]
+    if prices_52w:
+        v['f']['hi52'] = round(max(prices_52w), 2)
+        v['f']['lo52'] = round(min(prices_52w), 2)
     # Weekly: last daily close on or before each Friday (look back up to 7d)
     for fri in weekly_weeks:
         d = date.fromisoformat(fri)

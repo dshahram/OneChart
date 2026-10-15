@@ -22,7 +22,7 @@ DATA_DIR = os.path.join(ROOT, 'data')
 UNI_PATH = os.path.join(ROOT, 'universe.json')
 FAILED_SYMS_PATH = os.path.join(ROOT, 'failed_symbols.json')
 
-UA = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'}
+UA = {'User-Agent': 'Mozilla/5.0'}
 ET_Z = ZoneInfo('America/New_York')
 N_DAILY = 366
 TARGET_WEEKS = 523

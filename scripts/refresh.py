@@ -233,6 +233,9 @@ def fetch_fundamentals(s, crumb, tickers):
                     dy = q.get('dividendYield')
                     if dy is None:
                         dy = q.get('trailingAnnualDividendYield')
+                    # Yahoo returns yield as percentage (e.g., 4.64); convert to decimal
+                    if dy is not None:
+                        dy = float(dy) / 100
                     out[sym] = {
                         'pe': r2(q.get('trailingPE')), 'forwardPE': r2(q.get('forwardPE')),
                         'eps': r2(q.get('epsTrailingTwelveMonths')),

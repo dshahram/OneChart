@@ -192,11 +192,11 @@
   </section>
 
   <section class="control-deck" aria-label="Analysis controls">
+    <div class="control-block"><span class="control-label metric-help" data-tip="Choose what dragging on the chart does: Pan moves the view, Measure selects a period to analyze.">Drag action</span><div class="seg"><button class="active" data-tool="pan" title="Drag to pan the chart">Pan</button><button data-tool="measure" title="Drag to measure a period (shows returns + inflation)">Measure</button></div><button class="plain-btn" id="resetView">Reset view</button></div>
     <div class="seg-wrap"><span class="seg-label">View</span><div class="seg" id="viewMode" aria-label="Chart view">
       <button class="active" data-view="indexed" aria-pressed="true">% change</button><button data-view="price" aria-pressed="false">Actual prices</button><button data-view="growth" aria-pressed="false">Growth of $10k</button>
     </div></div>
     <div class="seg-wrap" id="contribWrap" hidden><span class="seg-label">Contributions</span><div class="contrib-row"><label>$<input id="contribInitial" type="number" min="0" step="100" value="10000" aria-label="Initial investment"></label><span>start +</span><label>$<input id="contribAmount" type="number" min="0" step="50" value="0" aria-label="Recurring contribution"></label><select id="contribCadence" aria-label="Contribution cadence"><option value="monthly">/ month</option><option value="quarterly">/ quarter</option><option value="annual">/ year</option></select></div></div>
-    <div class="control-block"><span class="control-label metric-help" data-tip="Choose what dragging on the chart does: Pan moves the view, Measure selects a period to analyze.">Drag action</span><div class="seg"><button class="active" data-tool="pan" title="Drag to pan the chart">Pan</button><button data-tool="measure" title="Drag to measure a period (shows returns + inflation)">Measure</button></div><button class="plain-btn" id="resetView">Reset view</button></div>
     <div class="control-block"><button class="plain-btn" id="copyLinkBtn" title="Copy a link to this exact view">Copy link</button></div>
     
   </section>

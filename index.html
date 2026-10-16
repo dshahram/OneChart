@@ -225,7 +225,7 @@
     </div>
     <p class="note">Every possible <span id="holdingYearsLabel">5-year</span> window in the last 10 years, as an annualized return. Past windows don't predict the future — they show the range of what patience has delivered.</p>
     <div class="table-wrap"><table id="holdingTable" aria-label="Holding period outcomes">
-      <thead><tr><th>Symbol</th><th>Worst</th><th>Median</th><th>Best</th><th>Positive</th><th>Windows</th></tr></thead>
+      <thead><tr><th>Symbol</th><th>Worst</th><th>Median</th><th>Best</th><th>Positive</th></tr></thead>
       <tbody></tbody>
     </table></div>
   </section>
@@ -549,11 +549,11 @@ function renderHolding(){
   document.getElementById('holdingYearsLabel').textContent=holdingYears+'-year';
   chartSymbols().forEach(sym=>{
     const st=holdingStats(sym,holdingYears),tr=document.createElement('tr');
-    if(!st){tr.innerHTML='<td>'+sym+'</td><td colspan="5" class="note">Not enough history</td>';}
+    if(!st){tr.innerHTML='<td>'+sym+'</td><td colspan="4" class="note">Not enough history</td>';}
     else{
       const cell=(v)=>'<td class="'+(v>=0?'positive':'negative')+'">'+fmtPct(v)+'</td>';
       tr.innerHTML='<td><b>'+symLabel(sym)+'</b></td>'+cell(st.worst)+cell(st.median)+cell(st.best)+
-        '<td>'+st.positive.toFixed(0)+'%</td><td class="note">'+st.n+'</td>';
+        '<td>'+st.positive.toFixed(0)+'%</td>';
     }
     tb.appendChild(tr);
   });

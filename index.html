@@ -171,15 +171,6 @@
     <div class="seg-wrap"><span class="seg-label metric-help" data-tip="Logarithmic y-axis: equal percentage moves appear as equal vertical distances.">Scale</span><div class="control-block"><button class="plain-btn" id="logScaleBtn" aria-pressed="false">Log scale</button></div></div>
     <div class="seg-wrap"><span class="seg-label">&nbsp;</span><div class="control-block"><button class="plain-btn" id="benchmarkBtn" aria-pressed="false">+ S&amp;P 500 benchmark</button></div></div>
   </section>
-  <section class="control-deck" aria-label="Analysis controls">
-    <div class="seg-wrap"><span class="seg-label">View</span><div class="seg" id="viewMode" aria-label="Chart view">
-      <button class="active" data-view="indexed" aria-pressed="true">% change</button><button data-view="price" aria-pressed="false">Actual prices</button><button data-view="growth" aria-pressed="false">Growth of $10k</button>
-    </div></div>
-    <div class="seg-wrap" id="contribWrap" hidden><span class="seg-label">Contributions</span><div class="contrib-row"><label>$<input id="contribInitial" type="number" min="0" step="100" value="10000" aria-label="Initial investment"></label><span>start +</span><label>$<input id="contribAmount" type="number" min="0" step="50" value="0" aria-label="Recurring contribution"></label><select id="contribCadence" aria-label="Contribution cadence"><option value="monthly">/ month</option><option value="quarterly">/ quarter</option><option value="annual">/ year</option></select></div></div>
-    <div class="control-block"><span class="control-label metric-help" data-tip="Choose what dragging on the chart does: Pan moves the view, Measure selects a period to analyze.">Drag action</span><div class="seg"><button class="active" data-tool="pan" title="Drag to pan the chart">Pan</button><button data-tool="measure" title="Drag to measure a period (shows returns + inflation)">Measure</button></div><button class="plain-btn" id="resetView">Reset view</button></div>
-    <div class="control-block"><button class="plain-btn" id="copyLinkBtn" title="Copy a link to this exact view">Copy link</button></div>
-    
-  </section>
   <section class="watchbar" aria-label="Watchlists">
     <input class="watch-name" id="watchName" maxlength="40" placeholder="Name this watchlist" aria-label="Watchlist name">
     <select class="watch-select" id="watchSelect" aria-label="Saved watchlists"><option value="">No saved watchlists</option></select>
@@ -198,6 +189,16 @@
     </div>
     <div class="seg-wrap"><span class="seg-label">Custom</span><div class="control-block"><label class="date-field">From <input id="startDate" type="date" aria-label="Custom start date"></label><label class="date-field">To <input id="endDate" type="date" aria-label="Custom end date"></label><button class="plain-btn" id="applyDates">Apply</button></div></div>
 
+  </section>
+
+  <section class="control-deck" aria-label="Analysis controls">
+    <div class="seg-wrap"><span class="seg-label">View</span><div class="seg" id="viewMode" aria-label="Chart view">
+      <button class="active" data-view="indexed" aria-pressed="true">% change</button><button data-view="price" aria-pressed="false">Actual prices</button><button data-view="growth" aria-pressed="false">Growth of $10k</button>
+    </div></div>
+    <div class="seg-wrap" id="contribWrap" hidden><span class="seg-label">Contributions</span><div class="contrib-row"><label>$<input id="contribInitial" type="number" min="0" step="100" value="10000" aria-label="Initial investment"></label><span>start +</span><label>$<input id="contribAmount" type="number" min="0" step="50" value="0" aria-label="Recurring contribution"></label><select id="contribCadence" aria-label="Contribution cadence"><option value="monthly">/ month</option><option value="quarterly">/ quarter</option><option value="annual">/ year</option></select></div></div>
+    <div class="control-block"><span class="control-label metric-help" data-tip="Choose what dragging on the chart does: Pan moves the view, Measure selects a period to analyze.">Drag action</span><div class="seg"><button class="active" data-tool="pan" title="Drag to pan the chart">Pan</button><button data-tool="measure" title="Drag to measure a period (shows returns + inflation)">Measure</button></div><button class="plain-btn" id="resetView">Reset view</button></div>
+    <div class="control-block"><button class="plain-btn" id="copyLinkBtn" title="Copy a link to this exact view">Copy link</button></div>
+    
   </section>
 
     <div class="blend-bar" id="blendBar" hidden><span class="blend-title">Blends</span><div id="blendList" class="blend-list"></div></div>

@@ -394,7 +394,7 @@ function renderMeasurePanel(series){
 function renderChart(){
   const host=$('#plot'),panel=$('#measurePanel'),readout=$('#readout');host.querySelectorAll('svg,.empty').forEach(n=>n.remove());panel.hidden=true;readout.classList.remove('visible');readout.innerHTML='';
   if(!selected.length){const empty=document.createElement('div');empty.className='empty';empty.innerHTML='<div><b>No symbols selected</b>Use search to add one.</div>';host.appendChild(empty);return}
-  const W=Math.max(340,host.clientWidth),H=Math.max(300,host.clientHeight),m={l:useLog?80:68,r:18,t:20,b:38},pw=W-m.l-m.r,ph=H-m.t-m.b,series=transformedSeries();if(!series.length)return;
+  const W=Math.max(340,host.clientWidth),H=Math.max(300,host.clientHeight),m={l:68,r:18,t:20,b:38},pw=W-m.l-m.r,ph=H-m.t-m.b,series=transformedSeries();if(!series.length)return;
   const all=series.flatMap(s=>s.vals.map(p=>p[1])).filter(v=>v>0),usesDollarAxis=viewMode!=='indexed';let min,max,yTicks,useLog=logScale&&all.length>0;
   if(useLog){min=Math.min(...all);max=Math.max(...all);const p0=Math.ceil(Math.log(min)/Math.LN10),p1=Math.floor(Math.log(max)/Math.LN10);yTicks=[];for(let p=p0;p<=p1;p++)yTicks.push(Math.pow(10,p));if(!yTicks.length)yTicks=[min,max]}
   else if(usesDollarAxis){const nice=niceDollarAxis(all);min=nice.min;max=nice.max;yTicks=nice.ticks}else{min=Math.min(...all);max=Math.max(...all);const pad=(max-min||10)*.1;min-=pad;max+=pad;yTicks=Array.from({length:5},(_,i)=>max-i*(max-min)/4)}

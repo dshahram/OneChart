@@ -46,7 +46,7 @@
     .toolbar{display:flex;flex-wrap:wrap;gap:12px;align-items:end;margin-bottom:12px}.toolbar .search{flex:1 1 240px;min-width:240px}
     .range-seg{flex-wrap:wrap;justify-content:center}
     .seg-wrap{display:grid;gap:5px;justify-items:start}.seg-label{font:500 9px 'DM Mono',monospace;color:var(--muted);padding-left:3px;text-transform:uppercase;letter-spacing:.05em}
-    .control-deck{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 14px;align-items:flex-end}
+    .control-deck{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 14px;align-items:center}
     .chart-options{background:rgba(255,255,255,0.03);border:1px solid var(--line);border-radius:10px;padding:10px 14px}
     .chart-options .control-label{font:600 10px 'DM Mono',monospace;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-right:4px}
     .control-block{display:flex;align-items:center;gap:8px;min-height:42px;padding:5px 7px;background:var(--surface);border:1px solid var(--line);border-radius:10px}
@@ -192,7 +192,7 @@
   </section>
 
   <section class="control-deck" aria-label="Analysis controls">
-    <div class="control-block"><span class="control-label metric-help" data-tip="Choose what dragging on the chart does: Pan moves the view, Measure selects a period to analyze.">Drag action</span><div class="seg"><button class="active" data-tool="pan" title="Drag to pan the chart">Pan</button><button data-tool="measure" title="Drag to measure a period (shows returns + inflation)">Measure</button></div><button class="plain-btn" id="resetView">Reset view</button></div>
+    <div class="seg-wrap"><span class="seg-label metric-help" data-tip="Choose what dragging on the chart does: Pan moves the view, Measure selects a period to analyze.">Drag action</span><div class="control-block"><div class="seg"><button class="active" data-tool="pan" title="Drag to pan the chart">Pan</button><button data-tool="measure" title="Drag to measure a period (shows returns + inflation)">Measure</button></div><button class="plain-btn" id="resetView">Reset view</button></div></div>
     <div class="seg-wrap"><span class="seg-label">View</span><div class="seg" id="viewMode" aria-label="Chart view">
       <button class="active" data-view="indexed" aria-pressed="true">% change</button><button data-view="price" aria-pressed="false">Actual prices</button><button data-view="growth" aria-pressed="false">Growth of $10k</button>
     </div></div>

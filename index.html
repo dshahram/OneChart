@@ -85,6 +85,10 @@
     .chip button{border:0;background:transparent;padding:0;width:17px;height:17px;color:var(--muted);font-size:16px;line-height:14px}
     .chart-card{background:var(--surface);border:1px solid var(--line);box-shadow:var(--shadow);border-radius:14px;padding:22px 22px 16px}
     .chart-head{display:flex;justify-content:space-between;gap:18px;align-items:start;margin-bottom:4px}
+    .chart-head{flex-wrap:wrap}
+    .chart-head>div{min-width:0}
+    .chart-title,.chart-context,.chart-sub{overflow:visible;white-space:normal;overflow-wrap:anywhere}
+    .chart-title{line-height:1.35}
     .chart-context{font:500 10px 'DM Mono',monospace;color:var(--green);margin-bottom:5px;letter-spacing:.03em}.chart-title{font-size:15px;font-weight:600}.chart-sub{font:400 12px 'DM Mono',monospace;color:var(--muted);margin-top:4px}
     .plot{position:relative;height:420px;min-height:300px}
     .hover-readout{position:absolute;z-index:5;left:68px;top:16px;max-width:min(390px,calc(100% - 86px));padding:9px 11px;border:1px solid var(--line);border-radius:8px;background:color-mix(in srgb,var(--surface) 94%,transparent);box-shadow:0 8px 22px rgba(0,0,0,.18);pointer-events:none;font:500 11px/1.55 'DM Mono',monospace;color:var(--muted);opacity:0;transition:opacity .1s ease}

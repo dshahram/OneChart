@@ -313,7 +313,6 @@ def fetch_quote_summary(s, crumb, symbols, max_workers=10):
                     'roe': r2(raw(fd, 'returnOnEquity')),
                     'profitMargin': r2(raw(fd, 'profitMargins')),
                     'dti': dti,
-                    'ps': r2(raw(ks, 'priceToSalesTrailing12Months')),
                     'earnDate': earn_date,
                 }
             except Exception:
@@ -888,7 +887,7 @@ def main():
                 if not fh or fh[-1].get('d') != today_s:
                     snap = {'d': today_s}
                     for k in ('pe', 'forwardPE', 'eps', 'forwardEPS', 'yield',
-                              'beta', 'mcap', 'pb', 'ps', 'debtToEquity', 'fcf',
+                              'beta', 'mcap', 'pb', 'debtToEquity', 'fcf',
                               'roe', 'profitMargin'):
                         if f.get(k) is not None:
                             snap[k] = f[k]

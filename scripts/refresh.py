@@ -391,11 +391,6 @@ def backfill_one(s, crumb, sym, name, cls, daily_days, weekly_weeks):
         return None, crumb
     v['d'] = [am.get(ds) for ds in daily_days]
     v['u'] = [rm.get(ds, am.get(ds)) for ds in daily_days]
-    # 52-week high/low from last 252 trading days (or available)
-    prices_52w = [p for p in v['d'][-252:] if p is not None]
-    if prices_52w:
-        v['f']['hi52'] = round(max(prices_52w), 2)
-        v['f']['lo52'] = round(min(prices_52w), 2)
     # Weekly: last daily close on or before each Friday (look back up to 7d)
     for fri in weekly_weeks:
         d = date.fromisoformat(fri)
@@ -466,6 +461,11 @@ def update_symbol(s, crumb, sym, v, new_dates, prev_last,
         v['u'].append(rm.get(dt, am.get(dt)))
     v['d'] = v['d'][-N_DAILY:]
     v['u'] = v['u'][-N_DAILY:]
+    # 52-week high/low from last 252 trading days (or available) - after v['d'] finalized
+    prices_52w = [p for p in v['d'][-252:] if p is not None]
+    if prices_52w:
+        v['f']['hi52'] = round(max(prices_52w), 2)
+        v['f']['lo52'] = round(min(prices_52w), 2)
     if fetch_intraday:
         res, err, crumb = yahoo_chart(s, crumb, sym, 'range=5d&interval=15m')
         if res is not None:

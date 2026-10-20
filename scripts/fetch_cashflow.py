@@ -349,7 +349,7 @@ def match_fcf(end, fcf_by_end, tol=10):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--limit', type=int, default=1000)
+    ap.add_argument('--limit', type=int, default=None)
     ap.add_argument('--symbols', default='')
     ap.add_argument('--dry-run', action='store_true')
     args = ap.parse_args()
@@ -366,11 +366,11 @@ def main():
     files = [f[:-5] for f in os.listdir(DATA_DIR)
              if f.endswith('.json') and f != 'edgar.json']
     files.sort(key=mcap, reverse=True)
-    syms = files[:args.limit]
     if args.symbols:
         want = set(args.symbols.split(','))
         syms = [s for s in files if s in want]
-    else:
+    elif args.limit:
+        syms = files[:args.limit]
         # Maintenance scope: top-N by market cap UNION every symbol already
         # in the EDGAR registry, so promoted small caps keep refreshing.
         reg_path0 = os.path.join(DATA_DIR, 'edgar.json')
@@ -381,6 +381,14 @@ def main():
                 syms = syms + sorted(s for s in reg_syms if s in have and s not in syms)
             except Exception:
                 pass
+    else:
+        # Full-filer scope (expanded Oct 2026 with David's approval): every
+        # data file whose ticker has an SEC entry. The ~5,500 non-filers
+        # (ETFs/indexes/crypto/preferreds) are never touched. Failures are
+        # per-symbol isolated and gate-held values keep their last verified
+        # figure + its verification stamp, so a bad week degrades visibly
+        # (stale markers on the site) instead of breaking anything.
+        syms = [s for s in files if s.upper() in cmap]
 
     def work(sym):
         cik = cmap.get(sym.upper())
@@ -411,6 +419,17 @@ def main():
         except Exception:
             registry = {}
 
+    today_s = time.strftime('%Y-%m-%d')
+    # Load last week's registry values ONCE. A corrupt registry must degrade
+    # gracefully (treat as empty; values get rebuilt from this run's verified
+    # computations and the daily job's registry-size check will flag the
+    # shrink loudly) — never crash the run.
+    reg_values = {}
+    if os.path.exists(reg_path):
+        try:
+            reg_values = (json.load(open(reg_path)) or {}).get('values') or {}
+        except Exception:
+            reg_values = {}
     with ThreadPoolExecutor(max_workers=6) as ex:
         for sym, res in ex.map(work, syms):
             stats['symbols'] += 1
@@ -432,18 +451,29 @@ def main():
             entry = {}
             changed = False
             # preserve last week's verified values unless a new value passes
-            prev_reg = (json.load(open(reg_path)).get('values') or {}).get(sym, {}) \
-                if os.path.exists(reg_path) else {}
+            prev_reg = reg_values.get(sym, {})
             if fcf_ttm is not None and not reit and not fin:
                 if rev_ttm is None or abs(fcf_ttm) <= 1.5 * rev_ttm:
                     entry['fcf'] = round(fcf_ttm)
+                    entry['fcf_asof'] = today_s
                     if not args.dry_run:
                         f['fcf'] = entry['fcf']
+                        f['fcfAsOf'] = today_s
                     stats['fcf_set'] += 1; changed = True
                 elif 'fcf' in prev_reg:
                     entry['fcf'] = prev_reg['fcf']
+                    if prev_reg.get('fcf_asof'):
+                        entry['fcf_asof'] = prev_reg['fcf_asof']
+                        if not args.dry_run and f.get('fcf') == prev_reg['fcf'] \
+                                and f.get('fcfAsOf') != prev_reg['fcf_asof']:
+                            f['fcfAsOf'] = prev_reg['fcf_asof']; changed = True
             elif 'fcf' in prev_reg and not reit and not fin:
                 entry['fcf'] = prev_reg['fcf']
+                if prev_reg.get('fcf_asof'):
+                    entry['fcf_asof'] = prev_reg['fcf_asof']
+                    if not args.dry_run and f.get('fcf') == prev_reg['fcf'] \
+                            and f.get('fcfAsOf') != prev_reg['fcf_asof']:
+                        f['fcfAsOf'] = prev_reg['fcf_asof']; changed = True
             # D/E gate: range check AND <=60% divergence from the value
             # currently in the file (Yahoo's for non-registry symbols, last
             # verified EDGAR value for registry symbols). A wild divergence
@@ -457,13 +487,25 @@ def main():
                 if cur is None or (cur < 0) != (de < 0) \
                         or abs(de - cur) / max(abs(cur), abs(de)) <= 0.6:
                     entry['debtToEquity'] = round(de, 4)
+                    entry['de_asof'] = today_s
                     if not args.dry_run:
                         f['debtToEquity'] = entry['debtToEquity']
+                        f['deAsOf'] = today_s
                     stats['de_set'] += 1; changed = True
                 elif 'debtToEquity' in prev_reg:
                     entry['debtToEquity'] = prev_reg['debtToEquity']
+                    if prev_reg.get('de_asof'):
+                        entry['de_asof'] = prev_reg['de_asof']
+                        if not args.dry_run and f.get('debtToEquity') == prev_reg['debtToEquity'] \
+                                and f.get('deAsOf') != prev_reg['de_asof']:
+                            f['deAsOf'] = prev_reg['de_asof']; changed = True
             elif 'debtToEquity' in prev_reg:
                 entry['debtToEquity'] = prev_reg['debtToEquity']
+                if prev_reg.get('de_asof'):
+                    entry['de_asof'] = prev_reg['de_asof']
+                    if not args.dry_run and f.get('debtToEquity') == prev_reg['debtToEquity'] \
+                            and f.get('deAsOf') != prev_reg['de_asof']:
+                        f['deAsOf'] = prev_reg['de_asof']; changed = True
             if fcf_q and not reit and not fin:
                 for q in doc.get('q') or []:
                     v = match_fcf(q['d'], fcf_q)
@@ -475,15 +517,21 @@ def main():
                 registry[sym] = entry
             if changed and not args.dry_run:
                 doc['f'] = f
-                with open(path, 'w') as fh:
+                # Atomic write: a kill mid-write must never leave a
+                # truncated data file behind.
+                tmp_path = path + '.tmp'
+                with open(tmp_path, 'w') as fh:
                     json.dump(doc, fh, separators=(',', ':'))
+                os.replace(tmp_path, path)
 
     if not args.dry_run:
         out = {'asof': time.strftime('%Y-%m-%d'), 'source': 'SEC EDGAR companyconcept API',
-               'note': 'fcf = TTM free cash flow (OpCF - CapEx from filings); debtToEquity = (borrowings + leases) / equity',
+               'note': 'fcf = TTM free cash flow (OpCF - CapEx from filings); debtToEquity = (borrowings + leases) / equity; fcf_asof/de_asof = date each value was last verified against filings (site shows a stale marker past 21 days)',
                'values': registry}
-        with open(reg_path, 'w') as fh:
+        reg_tmp = reg_path + '.tmp'
+        with open(reg_tmp, 'w') as fh:
             json.dump(out, fh, separators=(',', ':'))
+        os.replace(reg_tmp, reg_path)
     print(json.dumps(stats))
     if stats['symbols'] >= 100 and (stats['fcf_set'] == 0 or stats['de_set'] == 0
             or stats['fcf_set'] + stats['de_set'] < 0.3 * stats['symbols']):

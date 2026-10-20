@@ -1000,6 +1000,25 @@ def main():
     check(sp is not None and len(sp.get('d', [])) == N_DAILY, 'AAPL daily')
     check(sp is not None and len(sp.get('w', [])) == TARGET_WEEKS, 'AAPL weekly')
     check(isinstance(sp.get('f', {}).get('pe'), (int, float)), 'AAPL fundamentals')
+    # EDGAR registry survival: values verified weekly from SEC filings must
+    # still be intact after today's merge (guards the guard). A missing or
+    # shrunken registry is a loud failure, not a silent fallback to Yahoo.
+    try:
+        _reg = (json.load(open(os.path.join(DATA_DIR, 'edgar.json'))) or {}).get('values') or {}
+    except Exception:
+        _reg = {}
+    check(len(_reg) > 1000, f'edgar registry {len(_reg)} symbols')
+    _bad = 0
+    for _s, _ev in list(_reg.items())[:400]:
+        _d = read_symbol(_s)
+        if not _d:
+            continue
+        _f = _d.get('f') or {}
+        if _ev.get('fcf') is not None and _f.get('fcf') != _ev['fcf']:
+            _bad += 1
+        if _ev.get('debtToEquity') is not None and _f.get('debtToEquity') != _ev['debtToEquity']:
+            _bad += 1
+    check(_bad == 0, f'edgar values intact (mismatches {_bad})')
     if errs:
         log('ERRORS:', errs)
         return 1

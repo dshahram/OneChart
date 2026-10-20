@@ -250,9 +250,14 @@ def main():
             # currently in the file (Yahoo's for non-registry symbols, last
             # verified EDGAR value for registry symbols). A wild divergence
             # means a tag/coverage problem, not a real move: hold.
-            if de is not None and 0 < de <= 25:
+            # Negative values are legitimate (negative-equity companies —
+            # David wants them shown); a sign flip vs the file value is real
+            # news (equity crossed zero), not a divergence. de == 0 is the
+            # one impossible value: it means the debt tags were missed.
+            if de is not None and -1000 <= de <= 25 and de != 0:
                 cur = f.get('debtToEquity')
-                if cur is None or abs(de - cur) / max(cur, de) <= 0.6:
+                if cur is None or (cur < 0) != (de < 0) \
+                        or abs(de - cur) / max(abs(cur), abs(de)) <= 0.6:
                     entry['debtToEquity'] = round(de, 4)
                     if not args.dry_run:
                         f['debtToEquity'] = entry['debtToEquity']

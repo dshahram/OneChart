@@ -126,6 +126,9 @@ def update_symbol(sym, quarters, extra=None):
     # Merge: existing quarters by date, update with new data
     existing = {q['d']: q for q in data.get('q', [])}
     for q in quarters:
+        # Preserve SEC EDGAR free cash flow across Yahoo rebuilds
+        if 'fcf' in existing.get(q['d'], {}) and 'fcf' not in q:
+            q = {**q, 'fcf': existing[q['d']]['fcf']}
         existing[q['d']] = q
 
     # Sort newest first, keep 8

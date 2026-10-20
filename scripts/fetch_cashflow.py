@@ -282,6 +282,10 @@ def main():
         with open(reg_path, 'w') as fh:
             json.dump(out, fh, separators=(',', ':'))
     print(json.dumps(stats))
+    if stats['symbols'] >= 100 and (stats['fcf_set'] == 0 or stats['de_set'] == 0
+            or stats['fcf_set'] + stats['de_set'] < 0.3 * stats['symbols']):
+        print('TRIPWIRE: EDGAR coverage collapse', stats, file=sys.stderr)
+        return 1
     if stats['symbols'] > 0 and stats['fcf_set'] == 0 and stats['de_set'] == 0:
         print('ERROR: zero values computed', file=sys.stderr)
         return 1

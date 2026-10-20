@@ -93,19 +93,23 @@ def fetch_quarterly(s, crumb, sym):
     return [], crumb
 
 def get_top_symbols(limit=1000):
-    """Get top N symbols by market cap from universe.json top_mcap."""
-    try:
-        with open(UNI_PATH, 'r') as f:
-            uni = json.load(f)
-            top = uni.get('top_mcap', [])
-            if len(top) >= limit:
-                return top[:limit]
-            elif top:
-                return top
-    except Exception as e:
-        log(f"Could not load top_mcap from universe.json: {e}")
-    # Fallback
-    return ['AAPL', 'MSFT', 'NVDA', 'GOOG', 'AMZN', 'META', 'TSLA', 'BRK.B', 'LLY', 'AVGO'][:limit]
+    """Top N symbols by market cap, ranked from the data files themselves
+    (f.mcap, written by the daily refresh). Previously this read
+    data/universe.json (which does not exist) and silently fell back to a
+    hard-coded 10-symbol list — the Sunday job updated 10 symbols and
+    reported success."""
+    scored = []
+    for fn in os.listdir(DATA_DIR):
+        if not fn.endswith('.json') or fn == 'edgar.json':
+            continue
+        try:
+            with open(os.path.join(DATA_DIR, fn)) as fh:
+                m = (json.load(fh).get('f') or {}).get('mcap') or 0
+        except Exception:
+            m = 0
+        scored.append((m, urllib.parse.unquote(fn[:-5])))
+    scored.sort(reverse=True)
+    return [s for _, s in scored[:limit]]
 
 def update_symbol(sym, quarters, extra=None):
     """Merge new quarterly data and extra metrics into symbol's JSON."""
@@ -236,6 +240,9 @@ def main():
         time.sleep(0.3)
 
     log(f"Done: {success} updated, {failed} failed")
+    if only_symbols is None and (len(symbols) < limit * 0.9 or success < len(symbols) * 0.8):
+        log(f"TRIPWIRE: quarterly coverage collapse — {success}/{len(symbols)} updated (limit {limit})")
+        return 2
     return 0 if failed < len(symbols) * 0.5 else 1
 
 if __name__ == '__main__':

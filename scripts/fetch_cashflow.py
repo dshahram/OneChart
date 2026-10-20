@@ -140,12 +140,201 @@ def compute_de(cik):
     leases = sum(merged(cik, [t], False, latest_only=True) or 0 for t in LEASE_TAGS)
     return (debt + leases) / eq
 
-def is_reit(cik):
+def sic_info(cik):
+    """(is_reit, sic) from the submissions record."""
     try:
         r = sess().get(f'https://data.sec.gov/submissions/CIK{cik:010d}.json', timeout=30)
-        return r.json().get('sic') == '6798'
+        sic = r.json().get('sic') or ''
+        return sic == '6798', sic
+    except Exception:
+        return False, ''
+
+
+def is_reit(cik):
+    return sic_info(cik)[0]
+
+# ---- Generalized fallback (Stage 5, Oct 2026) ---------------------------
+# For filers the USD/us-gaap concept path misses: IFRS reporters and
+# non-USD filers. Works off companyfacts (all taxonomies), computes in the
+# filer's own reporting currency, converts FCF to USD at spot FX. D/E is a
+# ratio — computed unit-consistently, no conversion needed.
+GEN_TAXES = [
+    ('us-gaap', {
+        'opcf': OPCF_TAGS, 'capex': CAPEX_TAGS,
+        'eq': ['StockholdersEquity'], 'debt_total': ['Debt'],
+        'debt_split': (['DebtCurrent', 'LongTermDebtCurrent'], ['LongTermDebtNoncurrent']),
+        'debt_lt': ['LongTermDebt', 'LongtermBorrowings', 'LongTermBorrowingsCurrent', 'Borrowings'],
+        'leases': ['OperatingLeaseLiabilityCurrent', 'OperatingLeaseLiabilityNoncurrent',
+                   'FinanceLeaseLiabilityCurrent', 'FinanceLeaseLiabilityNoncurrent']}),
+    ('ifrs-full', {
+        'opcf': ['CashFlowsFromUsedInOperatingActivities', 'CashFlowsFromUsedInOperations'],
+        'capex': ['PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities',
+                  'PurchaseOfPropertyPlantAndEquipment',
+                  'PurchaseOfPropertyPlantAndEquipmentIntangibleAssetsOtherThanGoodwillInvestmentPropertyAndOtherNoncurrentAssets'],
+        'eq': ['EquityAttributableToOwnersOfParent', 'Equity'],
+        'debt_total': ['Borrowings'],
+        'debt_split': (['ShorttermBorrowings'], ['LongtermBorrowings']),
+        'debt_lt': [],
+        'leases': ['LeaseLiabilities', 'NoncurrentLeaseLiabilities', 'CurrentLeaseLiabilities']}),
+]
+_fx_cache = {}
+
+
+def fx_rate(ccy):
+    if ccy == 'USD':
+        return 1.0
+    if ccy in _fx_cache:
+        return _fx_cache[ccy]
+    rate = None
+    try:
+        r = sess().get(f'https://query1.finance.yahoo.com/v8/finance/chart/{ccy}USD=X', timeout=20)
+        res = (r.json().get('chart') or {}).get('result') or []
+        if res:
+            rate = res[0]['meta'].get('regularMarketPrice')
+    except Exception:
+        pass
+    if not rate:
+        try:
+            r = sess().get(f'https://query1.finance.yahoo.com/v8/finance/chart/USD{ccy}=X', timeout=20)
+            res = (r.json().get('chart') or {}).get('result') or []
+            if res:
+                rate = 1.0 / res[0]['meta']['regularMarketPrice']
+        except Exception:
+            pass
+    _fx_cache[ccy] = rate
+    return rate
+
+
+def _units_of(tx, tags):
+    seen = {}
+    for t in tags:
+        for u, vals in ((tx.get(t) or {}).get('units') or {}).items():
+            seen[u] = seen.get(u, 0) + len([v for v in vals if 'start' in v])
+    return seen
+
+
+def _durs(tx, tags, unit):
+    best = {}
+    for t in tags:
+        for v in ((tx.get(t) or {}).get('units') or {}).get(unit, []):
+            if 'start' not in v:
+                continue
+            k = (v['start'], v['end'])
+            if k not in best or v.get('filed', '') > best[k].get('filed', ''):
+                best[k] = v
+    return list(best.values())
+
+
+def _inst(tx, tags, unit):
+    best = {}
+    for t in tags:
+        for v in ((tx.get(t) or {}).get('units') or {}).get(unit, []):
+            if 'start' in v:
+                continue
+            e = v['end']
+            if e not in best or v.get('filed', '') > best[e].get('filed', ''):
+                best[e] = v
+    return sorted(best.values(), key=lambda v: v['end'])[-1]['val'] if best else None
+
+
+
+def _fresh_enough(datestr):
+    """True if the period end is within the last 15 months."""
+    import datetime as _dt
+    try:
+        end = _dt.date.fromisoformat(datestr)
     except Exception:
         return False
+    return (_dt.date.today() - end).days <= 460
+
+
+def _spans(ds):
+    out = {}
+    for v in ds:
+        n = (dparse(v['end']) - dparse(v['start'])).days
+        kind = 'fy' if 330 <= n <= 400 else ('h' if 150 <= n <= 215 else None)
+        if kind:
+            out[(kind, v['end'])] = v['val']
+    return out
+
+
+def compute_general(cik):
+    """Facts-based fallback: returns (fcf_q_usd, fcf_ttm_usd, de)."""
+    try:
+        data = sess().get(f'https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json',
+                          timeout=60).json()
+    except Exception:
+        return {}, None, None
+    facts = data.get('facts') or {}
+    fcf_q, fcf_ttm, de = {}, None, None
+    for tax_name, T in GEN_TAXES:
+        tx = facts.get(tax_name) or {}
+        if not tx:
+            continue
+        if fcf_ttm is None:
+            cand = _units_of(tx, T['opcf'])
+            for unit in sorted(cand, key=lambda u: (-cand[u], u != 'USD')):
+                op_d, cx_d = _durs(tx, T['opcf'], unit), _durs(tx, T['capex'], unit)
+                op, cx = standalone_quarters(op_d), standalone_quarters(cx_d)
+                fq = {e: op[e] - cx[e] for e in op if e in cx}
+                ttm_local, qmap = None, {}
+                if len(fq) >= 4:
+                    ends = sorted(fq)
+                    last4 = ends[-4:]
+                    gaps = [(dparse(last4[i + 1]) - dparse(last4[i])).days for i in range(3)]
+                    if all(60 <= g <= 125 for g in gaps) and _fresh_enough(last4[-1]):
+                        ttm_local = sum(fq[e] for e in last4)
+                        qmap = {e: fq[e] for e in ends[-8:]}
+                if ttm_local is None:
+                    ops, cxs = _spans(op_d), _spans(cx_d)
+                    keys = sorted(set(ops) & set(cxs))
+                    fys = [e for (k, e) in keys if k == 'fy']
+                    hs = [e for (k, e) in keys if k == 'h']
+                    if fys and _fresh_enough(fys[-1]) and not any(e > fys[-1] for e in hs):
+                        ttm_local = ops[('fy', fys[-1])] - cxs[('fy', fys[-1])]
+                    elif fys and hs:
+                        fy_e, after = fys[-1], [e for e in hs if e > fys[-1]]
+                        if after:
+                            hc = after[-1]
+                            prior = next((e for e in hs
+                                          if abs((dparse(hc) - dparse(e)).days - 365) <= 40 and e < hc), None)
+                            if prior and _fresh_enough(hc):
+                                ttm_local = (ops[('fy', fy_e)] - cxs[('fy', fy_e)]) \
+                                    + (ops[('h', hc)] - cxs[('h', hc)]) \
+                                    - (ops[('h', prior)] - cxs[('h', prior)])
+                if ttm_local is None:
+                    continue
+                rate = fx_rate(unit)
+                if not rate:
+                    continue
+                fcf_ttm = ttm_local * rate
+                fcf_q = {e: v * rate for e, v in qmap.items()}
+                break
+        if de is None:
+            eq_units = _units_of(tx, T['eq'])
+            if eq_units:
+                unit = 'USD' if 'USD' in eq_units else max(eq_units, key=eq_units.get)
+                eq = _inst(tx, T['eq'], unit)
+                if eq:
+                    total = _inst(tx, T['debt_total'], unit)
+                    if total is not None:
+                        debt = total
+                    else:
+                        cur = _inst(tx, T['debt_split'][0], unit)
+                        non = _inst(tx, T['debt_split'][1], unit)
+                        if cur is not None or non is not None:
+                            debt = (cur or 0) + (non or 0)
+                        elif T['debt_lt']:
+                            debt = _inst(tx, T['debt_lt'], unit)
+                        else:
+                            debt = None
+                    if debt is not None:
+                        leases = sum(_inst(tx, [t], unit) or 0 for t in T['leases'])
+                        de = (debt + leases) / eq
+        if fcf_ttm is not None and de is not None:
+            break
+    return fcf_q, fcf_ttm, de
+
 
 def match_fcf(end, fcf_by_end, tol=10):
     from datetime import date, timedelta
@@ -198,7 +387,15 @@ def main():
         if not cik:
             return sym, None
         try:
-            return sym, (compute(cik), is_reit(cik))
+            (fcf_q, fcf_ttm, de) = compute(cik)
+            reit, sic = sic_info(cik)
+            if fcf_ttm is None or de is None:
+                gq, gt, gd = compute_general(cik)
+                if fcf_ttm is None and gt is not None:
+                    fcf_q, fcf_ttm = gq, gt
+                if de is None and gd is not None:
+                    de = gd
+            return sym, ((fcf_q, fcf_ttm, de), reit, sic)
         except Exception:
             return sym, None
 
@@ -220,7 +417,8 @@ def main():
             if res is None:
                 stats['skipped'] += 1
                 continue
-            (fcf_q, fcf_ttm, de), reit = res
+            (fcf_q, fcf_ttm, de), reit, sic = res
+            fin = sic.isdigit() and 6000 <= int(sic) <= 6999
             path = os.path.join(DATA_DIR, sym + '.json')
             try:
                 with open(path) as fh:
@@ -236,7 +434,7 @@ def main():
             # preserve last week's verified values unless a new value passes
             prev_reg = (json.load(open(reg_path)).get('values') or {}).get(sym, {}) \
                 if os.path.exists(reg_path) else {}
-            if fcf_ttm is not None and not reit:
+            if fcf_ttm is not None and not reit and not fin:
                 if rev_ttm is None or abs(fcf_ttm) <= 1.5 * rev_ttm:
                     entry['fcf'] = round(fcf_ttm)
                     if not args.dry_run:
@@ -244,7 +442,7 @@ def main():
                     stats['fcf_set'] += 1; changed = True
                 elif 'fcf' in prev_reg:
                     entry['fcf'] = prev_reg['fcf']
-            elif 'fcf' in prev_reg and not reit:
+            elif 'fcf' in prev_reg and not reit and not fin:
                 entry['fcf'] = prev_reg['fcf']
             # D/E gate: range check AND <=60% divergence from the value
             # currently in the file (Yahoo's for non-registry symbols, last
@@ -266,7 +464,7 @@ def main():
                     entry['debtToEquity'] = prev_reg['debtToEquity']
             elif 'debtToEquity' in prev_reg:
                 entry['debtToEquity'] = prev_reg['debtToEquity']
-            if fcf_q and not reit:
+            if fcf_q and not reit and not fin:
                 for q in doc.get('q') or []:
                     v = match_fcf(q['d'], fcf_q)
                     if v is not None:

@@ -554,6 +554,11 @@ def main():
     existing = set()
     if os.path.isdir(DATA_DIR):
         for fn in os.listdir(DATA_DIR):
+            # data/edgar.json is the SEC EDGAR registry, not a ticker file.
+            # It must never be treated as a symbol (Oct 20, 2026: it crashed
+            # the daily run with KeyError: 'd' via the carry-forward path).
+            if fn == 'edgar.json':
+                continue
             sym = sym_from_fname(fn)
             if sym:
                 existing.add(sym)
@@ -711,6 +716,16 @@ def main():
 
     ok, failed = 0, []
 
+    # Crash recovery: ONECHART_PRICES_CURRENT=1 declares that every existing
+    # symbol file already absorbed new_dates (a previous run completed the
+    # price phase but died before the later phases). work() then skips the
+    # price append/weekly resample for existing symbols to avoid duplicate
+    # dates; genuinely new symbols still backfill normally. Only set this
+    # for a verified-complete price phase (Oct 20, 2026 recovery).
+    _PRICES_CURRENT = os.environ.get('ONECHART_PRICES_CURRENT') == '1'
+    if _PRICES_CURRENT:
+        log('ONECHART_PRICES_CURRENT=1: skipping price phase for existing symbols')
+
     def work(sym):
         if sym in tickers:
             name, cls = tickers[sym]
@@ -723,7 +738,7 @@ def main():
         v = read_symbol(sym)
         if v is None:
             return sym, False
-        if new_dates:
+        if new_dates and not (_PRICES_CURRENT and sym in existing):
             if sym not in tickers:
                 # Present in data files but absent from this run's universe
                 # fetch (fetch variation or delisting): carry forward with

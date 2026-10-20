@@ -181,6 +181,17 @@ def main():
     if args.symbols:
         want = set(args.symbols.split(','))
         syms = [s for s in files if s in want]
+    else:
+        # Maintenance scope: top-N by market cap UNION every symbol already
+        # in the EDGAR registry, so promoted small caps keep refreshing.
+        reg_path0 = os.path.join(DATA_DIR, 'edgar.json')
+        if os.path.exists(reg_path0):
+            try:
+                reg_syms = set((json.load(open(reg_path0)).get('values') or {}).keys())
+                have = set(files)
+                syms = syms + sorted(s for s in reg_syms if s in have and s not in syms)
+            except Exception:
+                pass
 
     def work(sym):
         cik = cmap.get(sym.upper())

@@ -896,6 +896,12 @@ def main():
                         existing['fcf'] = _ev['fcf']
                     if _ev.get('debtToEquity') is not None:
                         existing['debtToEquity'] = _ev['debtToEquity']
+                    # Keep the per-field verification stamps in sync with
+                    # the registry so the site's stale marker stays truthful.
+                    if _ev.get('fcf_asof'):
+                        existing['fcfAsOf'] = _ev['fcf_asof']
+                    if _ev.get('de_asof'):
+                        existing['deAsOf'] = _ev['de_asof']
                 v['f'] = existing
                 # Append historical snapshot
                 fh = v.get('fh') or []

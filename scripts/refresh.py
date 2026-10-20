@@ -870,6 +870,16 @@ def main():
     # Historical fundamentals: snapshot today's key metrics for trend views.
     # Stored as v['fh'] = list of {d: date, pe, eps, yield, pb, mcap, ...}.
     # Bounded to last 365 snapshots to avoid file bloat.
+    # SEC EDGAR overrides: for symbols listed in data/edgar.json, EDGAR-sourced
+    # fcf and debtToEquity win over Yahoo's summary fields. Yahoo's
+    # financialData.freeCashflow is materially wrong (verified Oct 2026);
+    # the registry is refreshed weekly by the EDGAR job. Missing file = no-op.
+    edgar_values = {}
+    try:
+        with open(os.path.join(DATA_DIR, 'edgar.json')) as _ef:
+            edgar_values = (json.load(_ef) or {}).get('values') or {}
+    except Exception:
+        edgar_values = {}
     today_s = today_et.isoformat()
     for sym, f in funds.items():
         p = os.path.join(DATA_DIR, fname(sym))
@@ -880,6 +890,12 @@ def main():
                 # symbols outside the daily top-2000 quoteSummary fetch.
                 existing = v.get('f') or {}
                 existing.update(f)
+                _ev = edgar_values.get(sym)
+                if _ev:
+                    if _ev.get('fcf') is not None:
+                        existing['fcf'] = _ev['fcf']
+                    if _ev.get('debtToEquity') is not None:
+                        existing['debtToEquity'] = _ev['debtToEquity']
                 v['f'] = existing
                 # Append historical snapshot
                 fh = v.get('fh') or []

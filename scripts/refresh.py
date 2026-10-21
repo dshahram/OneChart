@@ -328,8 +328,13 @@ def fetch_quote_summary(s, crumb, symbols, max_workers=10):
 
 def fetch_cpi():
     try:
+        # BLS's unregistered API returns at most a 10-year window anchored at
+        # startyear — a hardcoded 2016 silently froze CPI at Dec 2025 once
+        # the calendar passed it (found Oct 21, 2026). Roll the window so it
+        # always covers the present; main() merges with the stored history
+        # so older months are never lost.
         payload = json.dumps({'seriesid': ['CUUR0000SA0'],
-                              'startyear': '2016',
+                              'startyear': str(date.today().year - 9),
                               'endyear': str(date.today().year)}).encode()
         req = urllib.request.Request('https://api.bls.gov/publicAPI/v2/timeseries/data/',
                                      data=payload, headers={'Content-Type': 'application/json',
@@ -974,7 +979,16 @@ def main():
                 log(f'  news {i+1}/{len(news_syms)}')
     log(f'news: {news_ok}/{len(news_syms)}')
 
-    cpi = fetch_cpi() or old_cpi
+    # CPI: merge the fresh BLS window into the stored history — fresh values
+    # win for overlapping months, stored months outside the API's 10-year
+    # window are kept, so the series only ever grows.
+    _fresh_cpi = fetch_cpi()
+    if _fresh_cpi:
+        _cpi_map = {m: v for m, v in old_cpi}
+        _cpi_map.update({m: v for m, v in _fresh_cpi})
+        cpi = [[m, _cpi_map[m]] for m in sorted(_cpi_map)]
+    else:
+        cpi = old_cpi
 
     # Top by market cap: 5 largest symbols. Used by the frontend for the
     # bare-URL default view (recognizable names). Deduplicates dual-class

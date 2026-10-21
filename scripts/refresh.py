@@ -21,6 +21,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(ROOT, 'data')
 UNI_PATH = os.path.join(ROOT, 'universe.json')
 FAILED_SYMS_PATH = os.path.join(ROOT, 'failed_symbols.json')
+DELIST_WATCH_PATH = os.path.join(ROOT, 'delisting_watch.json')
+DELIST_AFTER = 3  # consecutive universe-fetch absences before a file is dropped
 
 UA = {'User-Agent': 'Mozilla/5.0'}
 ET_Z = ZoneInfo('America/New_York')
@@ -681,11 +683,34 @@ def main():
                 new_weekly_weeks = new_weekly_weeks[drop:]
             asof = new_dates[-1]
             daily_days, weekly_weeks = new_daily_days, new_weekly_weeks
-        # drop delisted files
-        for sym in existing - set(tickers.keys()):
-            p = os.path.join(DATA_DIR, fname(sym))
-            if os.path.exists(p):
-                os.remove(p)
+        # Drop delisted files — but only after DELIST_AFTER consecutive
+        # absences from the universe fetch. A single day's absence is
+        # usually NASDAQ fetch variation, not a delisting (Oct 20, 2026:
+        # 15 live tickers vanished for one day and were deleted on sight,
+        # losing their history files). Absence counters persist in
+        # delisting_watch.json; reappearing resets a symbol's counter.
+        absent = existing - set(tickers.keys())
+        try:
+            _watch = json.load(open(DELIST_WATCH_PATH))
+        except Exception:
+            _watch = {}
+        for sym in absent:
+            _watch[sym] = int(_watch.get(sym, 0)) + 1
+        for sym in list(_watch):
+            if sym not in absent:
+                del _watch[sym]
+        for sym in sorted(absent):
+            if _watch.get(sym, 0) >= DELIST_AFTER:
+                p = os.path.join(DATA_DIR, fname(sym))
+                if os.path.exists(p):
+                    os.remove(p)
+                    log(f'dropping {sym}: absent from universe fetch '
+                        f'{_watch[sym]} runs in a row (presumed delisted)')
+                del _watch[sym]
+        try:
+            json.dump(_watch, open(DELIST_WATCH_PATH, 'w'))
+        except Exception as e:
+            log(f'  failed to save delisting watch: {e}')
         to_process = sorted(set(tickers.keys()) & existing)
         to_backfill = sorted(set(tickers.keys()) - existing)
         if to_backfill:

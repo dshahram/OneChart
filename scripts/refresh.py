@@ -155,6 +155,36 @@ def yahoo_chart(s, crumb, ticker, params):
     return None, last_err, crumb
 
 
+# ---------------- FX ----------------
+_fx_cache = {}
+
+def fx_rate_to_usd(s, ccy):
+    """USD per 1 unit of ccy (e.g. TWD -> ~0.031), via Yahoo FX tickers.
+    Mirrors fetch_cashflow.fx_rate (Stage 5). None if unavailable."""
+    if not ccy or ccy == 'USD':
+        return 1.0
+    if ccy in _fx_cache:
+        return _fx_cache[ccy]
+    rate = None
+    try:
+        r = s.get(f'https://query1.finance.yahoo.com/v8/finance/chart/{ccy}USD=X', timeout=20)
+        res = (r.json().get('chart') or {}).get('result') or []
+        if res:
+            rate = res[0]['meta'].get('regularMarketPrice')
+    except Exception:
+        pass
+    if not rate:
+        try:
+            r = s.get(f'https://query1.finance.yahoo.com/v8/finance/chart/USD{ccy}=X', timeout=20)
+            res = (r.json().get('chart') or {}).get('result') or []
+            if res and res[0]['meta'].get('regularMarketPrice'):
+                rate = 1.0 / res[0]['meta']['regularMarketPrice']
+        except Exception:
+            pass
+    _fx_cache[ccy] = rate
+    return rate
+
+
 # ---------------- universe ----------------
 def fetch_nasdaq_universe():
     tickers = {}
@@ -306,11 +336,23 @@ def fetch_quote_summary(s, crumb, symbols, max_workers=10):
                     fmt = earn_dates[0].get('fmt') if isinstance(earn_dates[0], dict) else None
                     if fmt:
                         earn_date = fmt.split(' ')[0]  # Get YYYY-MM-DD part
+                # Yahoo returns freeCashflow in the filer's REPORTING currency
+                # (financialData.financialCurrency), while the site displays
+                # USD. Convert at spot FX (same approach as the EDGAR
+                # pipeline, fetch_cashflow.fx_rate). If the currency or the
+                # FX rate is unavailable, withhold the value rather than
+                # store a figure in the wrong denomination.
+                fcf_val = raw(fd, 'freeCashflow')
+                if fcf_val is not None:
+                    ccy = fd.get('financialCurrency')
+                    if ccy and ccy != 'USD':
+                        rate = fx_rate_to_usd(s, ccy)
+                        fcf_val = round(float(fcf_val) * rate) if rate else None
                 return sym, {
                     # Yahoo returns debtToEquity as a percentage (e.g. 78.445 = 0.78x); normalize to ratio
                     'debtToEquity': (round(float(raw(fd, 'debtToEquity')) / 100, 4)
                                      if raw(fd, 'debtToEquity') is not None else None),
-                    'fcf': raw(fd, 'freeCashflow'),
+                    'fcf': fcf_val,
                     'revGrowth': r2(raw(fd, 'revenueGrowth')),
                     'roe': r2(raw(fd, 'returnOnEquity')),
                     'profitMargin': r2(raw(fd, 'profitMargins')),

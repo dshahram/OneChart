@@ -693,9 +693,12 @@ def main():
 
     # Intraday (1D view) only for the top-2000 by market cap -- fetching
     # 15m bars for 11k micro-caps every day is what made daily runs slow.
-    # Uses last known mcap from existing data files.
+    # Uses last known mcap from existing data files. Computed in EVERY mode:
+    # restricting it to pure daily runs starved the 1D view whenever a run
+    # landed in resume mode (found Oct 21, 2026: intraday empty site-wide
+    # since at least Oct 13 even though Yahoo serves the data fine).
     intraday_syms = set()
-    if not backfill_mode and existing:
+    if existing:
         mc = []
         for sym in existing:
             try:

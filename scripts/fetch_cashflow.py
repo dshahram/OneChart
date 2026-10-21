@@ -106,12 +106,36 @@ def standalone_quarters(vals):
     return out
 
 
+# A quarterly "TTM" is only honest if its four quarters are consecutive and
+# its newest quarter is current. Filers whose capex/OpCF concept disappears
+# from the standard taxonomy (e.g. TWLO after 2022-09-30) otherwise produce
+# a TTM silently assembled from years-old quarters, and filers with a hole
+# in the overlap produce one spanning far more than twelve months.
+# Freshness bound: a healthy filer's newest filed quarter is never more
+# than ~150 days old (quarter end + 10-Q window); the Oct 2026 registry
+# audit found the healthy mass at <=204 days and the broken tail at >=263
+# days, so 240 sits in the empty band between them.
+FCF_FRESH_DAYS = 240
+
+def _ttm_fresh(last4):
+    gaps = [(dparse(last4[i + 1]) - dparse(last4[i])).days for i in range(3)]
+    if not all(60 <= g <= 125 for g in gaps):
+        return False
+    return (date.today() - dparse(last4[-1])).days <= FCF_FRESH_DAYS
+
+
 def compute(cik):
     op = standalone_quarters(merged(cik, OPCF_TAGS, True))
     cx = standalone_quarters(merged(cik, CAPEX_TAGS, True))
     fcf_q = {e: op[e] - cx[e] for e in op if e in cx}
     ends = sorted(fcf_q)
-    fcf_ttm = sum(fcf_q[e] for e in ends[-4:]) if len(ends) >= 4 else None
+    fcf_ttm = None
+    if len(ends) >= 4 and _ttm_fresh(ends[-4:]):
+        fcf_ttm = sum(fcf_q[e] for e in ends[-4:])
+    if fcf_ttm is None:
+        # Withhold the quarterly values too: stale or non-consecutive
+        # quarters must not flow into the quarterly table either.
+        fcf_q = {}
     de = compute_de(cik)
     return fcf_q, fcf_ttm, de
 

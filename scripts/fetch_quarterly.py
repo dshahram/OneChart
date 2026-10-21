@@ -23,10 +23,38 @@ def get_crumb(s):
     s.get('https://fc.yahoo.com', timeout=30)
     return s.get('https://query1.finance.yahoo.com/v1/test/getcrumb', timeout=30).text.strip()
 
+_fx_cache = {}
+
+def fx_rate_to_usd(s, ccy):
+    """USD per 1 unit of ccy (e.g. TWD -> ~0.031), via Yahoo FX tickers.
+    Mirrors fetch_cashflow.fx_rate (Stage 5). None if unavailable."""
+    if not ccy or ccy == 'USD':
+        return 1.0
+    if ccy in _fx_cache:
+        return _fx_cache[ccy]
+    rate = None
+    try:
+        r = s.get(f'https://query1.finance.yahoo.com/v8/finance/chart/{ccy}USD=X', timeout=20)
+        res = (r.json().get('chart') or {}).get('result') or []
+        if res:
+            rate = res[0]['meta'].get('regularMarketPrice')
+    except Exception:
+        pass
+    if not rate:
+        try:
+            r = s.get(f'https://query1.finance.yahoo.com/v8/finance/chart/USD{ccy}=X', timeout=20)
+            res = (r.json().get('chart') or {}).get('result') or []
+            if res and res[0]['meta'].get('regularMarketPrice'):
+                rate = 1.0 / res[0]['meta']['regularMarketPrice']
+        except Exception:
+            pass
+    _fx_cache[ccy] = rate
+    return rate
+
 def fetch_quarterly(s, crumb, sym):
     """Fetch quarterly income + earnings for one symbol. Returns list of quarter dicts."""
     url = (f'https://query1.finance.yahoo.com/v10/finance/quoteSummary/{urllib.parse.quote(sym, safe="")}'
-           f'?modules=incomeStatementHistoryQuarterly,earningsHistory&crumb={urllib.parse.quote(crumb)}')
+           f'?modules=incomeStatementHistoryQuarterly,earningsHistory,financialData&crumb={urllib.parse.quote(crumb)}')
     for attempt in range(3):
         try:
             r = s.get(url, timeout=30)
@@ -43,6 +71,15 @@ def fetch_quarterly(s, crumb, sym):
                 time.sleep(2)
                 continue
             res = res[0]
+
+            # Yahoo returns revenue / net income in the filer's REPORTING
+            # currency (financialData.financialCurrency), while the site
+            # displays USD. Convert at spot FX (Stage 5 precedent). If the
+            # FX rate is unavailable, withhold the money fields rather than
+            # store figures in the wrong denomination. EPS is a per-share
+            # figure from a different module and is left untouched.
+            ccy = (res.get('financialData') or {}).get('financialCurrency')
+            fx = fx_rate_to_usd(s, ccy)
 
             # Quarterly income statements
             inc_stmts = (res.get('incomeStatementHistoryQuarterly') or {}).get('incomeStatementHistory', [])
@@ -77,9 +114,9 @@ def fetch_quarterly(s, crumb, sym):
                 quarters.append({
                     'q': q_label,
                     'd': end_date,
-                    'rev': int(rev) if rev else None,
+                    'rev': int(rev * fx) if rev and fx else None,
                     'eps': round(float(eps), 2) if eps is not None else None,
-                    'ni': int(ni) if ni else None,
+                    'ni': int(ni * fx) if ni and fx else None,
                 })
 
             # Sort newest first, keep max 8 (for YoY calc on displayed 4)

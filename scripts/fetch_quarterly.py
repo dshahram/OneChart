@@ -170,24 +170,6 @@ def update_symbol(sym, quarters, extra=None):
         # Preserve SEC EDGAR free cash flow across Yahoo rebuilds
         if 'fcf' in existing.get(q['d'], {}) and 'fcf' not in q:
             q = {**q, 'fcf': existing[q['d']]['fcf']}
-        # Preserve SEC operating income across Yahoo rebuilds (Yahoo's
-        # quarterly statement zeroes the field, so it never sends one)
-        if 'opInc' in existing.get(q['d'], {}) and 'opInc' not in q:
-            q = {**q, 'opInc': existing[q['d']]['opInc']}
-        # Preserve SEC-filed EPS across Yahoo rebuilds (Yahoo's epsActual
-        # is the adjusted figure for many filers)
-        _ex = existing.get(q['d'], {})
-        if _ex.get('epsSec') and 'eps' in _ex:
-            q = {**q, 'eps': _ex['eps'], 'epsSec': 1}
-        # Preserve a blanked EPS: the quarter has no filing-verified
-        # figure, so Yahoo's must not come back on a rebuild
-        if _ex.get('epsHeld') and 'eps' not in _ex:
-            q = {k: v for k, v in q.items() if k != 'eps'}
-            q['epsHeld'] = 1
-        # Preserve SEC headline net income across Yahoo rebuilds (Yahoo's
-        # quarterly figure is attributable-to-common, a different line)
-        if _ex.get('niSec') and 'ni' in _ex:
-            q = {**q, 'ni': _ex['ni'], 'niSec': 1}
         existing[q['d']] = q
 
     # Sort newest first, keep 8

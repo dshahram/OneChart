@@ -44,17 +44,13 @@ def sess():
         _tls.s = requests.Session(); _tls.s.headers.update(UA)
     return _tls.s
 
-def concept_u(cik, tag, unit):
+def concept(cik, tag):
     url = f'https://data.sec.gov/api/xbrl/companyconcept/CIK{cik:010d}/us-gaap/{tag}.json'
     r = sess().get(url, timeout=30)
     if r.status_code == 404:
         return []
     r.raise_for_status()
-    return (r.json().get('units') or {}).get(unit, [])
-
-
-def concept(cik, tag):
-    return concept_u(cik, tag, 'USD')
+    return (r.json().get('units') or {}).get('USD', [])
 
 def merged(cik, tags, want_start, latest_only=False):
     best = {}
@@ -375,104 +371,6 @@ def match_fcf(end, fcf_by_end, tol=10):
                 return fcf_by_end[cand.isoformat()]
     return None
 
-
-# --- Quarterly-table extras: filed diluted EPS + operating income ---------
-# Yahoo's earningsHistory epsActual is the ADJUSTED figure for most filers
-# (Oct 2026 audit: 68 of 95 checkable mega-cap quarters disagreed with the
-# filings), and its quarterly income statement zeroes operating income
-# entirely. Both are therefore sourced from the filings, merged into q rows
-# beside q.fcf. EPS is a per-share figure: standalone quarters only, taken
-# directly from the 10-Q tags — never differenced (a derived Q4 EPS was
-# tested and is off 1.5-13% because share counts do not difference).
-# Operating income is a dollar flow, so standalone_quarters differences it
-# exactly, Q4 included.
-REV_TAGS = ['Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax',
-            'RevenueFromContractWithCustomerIncludingAssessedTax',
-            'SalesRevenueNet', 'TotalRevenues']
-
-
-def _direct_quarters(cik, tag, unit):
-    """Bucket-3 (standalone quarter) entries only, latest filed wins,
-    keyed by period end. If two different values survive for one end
-    (multi-class tagging), the end is dropped as ambiguous."""
-    best = {}
-    for v in concept_u(cik, tag, unit):
-        if 'start' not in v:
-            continue
-        if bucket(v['start'], v['end']) != 3:
-            continue
-        key = (v['start'], v['end'])
-        if key not in best or v.get('filed', '') > best[key].get('filed', ''):
-            best[key] = v
-    by_end = {}
-    for (s, e), v in best.items():
-        by_end.setdefault(e, set()).add(round(float(v['val']), 6))
-    return {e: next(iter(vals)) for e, vals in by_end.items() if len(vals) == 1}
-
-
-def compute_q_extras(cik):
-    """Returns (eps_gated, opinc, rev, ni) maps keyed by period end.
-
-    eps_gated: filed diluted EPS that passes the reconciliation gate —
-    EPS x diluted shares must reproduce the same filer's standalone net
-    income (or net income available to common, for preferred/NCI filers)
-    within a cent-rounding-aware band. When neither numerator is tagged
-    the tie-out cannot run and the directly tagged value ships; when both
-    numerators exist and both fail, the value is held (Yahoo's stays).
-    """
-    eps_raw = _direct_quarters(cik, 'EarningsPerShareDiluted', 'USD/shares')
-    opinc = standalone_quarters(merged(cik, ['OperatingIncomeLoss'], True))
-    rev = standalone_quarters(merged(cik, REV_TAGS, True))
-    ni = standalone_quarters(merged(cik, ['NetIncomeLoss'], True))
-    if not eps_raw:
-        return {}, opinc, rev, ni
-    nic = standalone_quarters(
-        merged(cik, ['NetIncomeLossAvailableToCommonStockholdersBasic'], True))
-    sh3 = _direct_quarters(cik, 'WeightedAverageNumberOfDilutedSharesOutstanding',
-                           'shares')
-    gated = {}
-    for end, e in eps_raw.items():
-        s = match_fcf(end, sh3)
-        ni_v = match_fcf(end, ni)
-        nic_v = match_fcf(end, nic)
-
-        def dev(num):
-            if not s or not num:
-                return None
-            return abs(e * s - num) / abs(num)
-
-        d_ni, d_nc = dev(ni_v), dev(nic_v)
-        band = max(0.03, 0.0055 / abs(e)) if e else 0.03
-        if (d_ni is not None and d_ni <= band) \
-                or (d_nc is not None and d_nc <= band) \
-                or (d_ni is None and d_nc is None):
-            gated[end] = round(e, 2)
-    return gated, opinc, rev, ni
-
-
-def near_key(end, by_end, tol=10):
-    if end in by_end:
-        return end
-    d0 = dparse(end)
-    for delta in range(1, tol + 1):
-        for cand in (d0 - timedelta(days=delta), d0 + timedelta(days=delta)):
-            if cand.isoformat() in by_end:
-                return cand.isoformat()
-    return None
-
-
-def year_ago(datestr):
-    d = dparse(datestr)
-    try:
-        return d.replace(year=d.year - 1).isoformat()
-    except ValueError:  # Feb 29 -> Feb 28
-        return d.replace(year=d.year - 1, day=28).isoformat()
-
-
-def qlabel(end):
-    d = dparse(end)
-    return f"Q{(d.month - 1) // 3 + 1}'{d.year % 100:02d}"
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--limit', type=int, default=None)
@@ -492,16 +390,6 @@ def main():
     files = [f[:-5] for f in os.listdir(DATA_DIR)
              if f.endswith('.json') and f != 'edgar.json']
     files.sort(key=mcap, reverse=True)
-    # Symbols carrying quarterly rows get the filed-EPS / operating-income
-    # treatment; the other ~5,000 filers skip those extra SEC calls.
-    q_syms = set()
-    for stem in files:
-        try:
-            with open(os.path.join(DATA_DIR, stem + '.json')) as fh:
-                if json.load(fh).get('q'):
-                    q_syms.add(stem)
-        except Exception:
-            pass
     if args.symbols:
         want = set(args.symbols.split(','))
         syms = [s for s in files if s in want]
@@ -539,19 +427,11 @@ def main():
                     fcf_q, fcf_ttm = gq, gt
                 if de is None and gd is not None:
                     de = gd
-            extras = None
-            if sym in q_syms:
-                try:
-                    extras = compute_q_extras(cik)
-                except Exception:
-                    extras = None
-            return sym, ((fcf_q, fcf_ttm, de), reit, sic, extras)
+            return sym, ((fcf_q, fcf_ttm, de), reit, sic)
         except Exception:
             return sym, None
 
-    stats = {'symbols': 0, 'fcf_set': 0, 'de_set': 0, 'q_set': 0,
-             'eps_set': 0, 'eps_held': 0, 'op_set': 0, 'ni_set': 0,
-             'bf_add': 0, 'skipped': 0}
+    stats = {'symbols': 0, 'fcf_set': 0, 'de_set': 0, 'q_set': 0, 'skipped': 0}
     registry = {}
     # preserve registry entries for symbols outside this run's scope
     reg_path = os.path.join(DATA_DIR, 'edgar.json')
@@ -580,7 +460,7 @@ def main():
             if res is None:
                 stats['skipped'] += 1
                 continue
-            (fcf_q, fcf_ttm, de), reit, sic, extras = res
+            (fcf_q, fcf_ttm, de), reit, sic = res
             fin = sic.isdigit() and 6000 <= int(sic) <= 6999
             path = os.path.join(DATA_DIR, sym + '.json')
             try:
@@ -657,82 +537,6 @@ def main():
                         if not args.dry_run:
                             q['fcf'] = round(v)
                         stats['q_set'] += 1; changed = True
-            if extras:
-                eps_g, opinc_m, rev_m, ni_m = extras
-                qrows = doc.get('q') or []
-                for q in qrows:
-                    ev = match_fcf(q['d'], eps_g)
-                    if ev is not None:
-                        if not args.dry_run and (q.get('eps') != ev
-                                                 or not q.get('epsSec')):
-                            q['eps'] = ev; q['epsSec'] = 1
-                            q.pop('epsHeld', None)
-                        stats['eps_set'] += 1; changed = True
-                    elif not args.dry_run and 'eps' in q \
-                            and (eps_g or opinc_m or rev_m or ni_m):
-                        # No filing-verified EPS for this quarter (the
-                        # unreconciled set, Q4 rows): Yahoo's figure is
-                        # the adjusted one often enough that it cannot be
-                        # certified correct — blank it rather than display
-                        # a wrong-basis number. The non-empty-extras guard
-                        # keeps a transient SEC outage from blanking a
-                        # filer's whole column; structurally data-less
-                        # filers (foreign annual filers) were blanked by
-                        # the one-time pass and stay blank via the
-                        # epsHeld carry-over in fetch_quarterly.
-                        del q['eps']; q.pop('epsSec', None); q['epsHeld'] = 1
-                        stats['eps_held'] += 1; changed = True
-                    ov = match_fcf(q['d'], opinc_m)
-                    if ov is not None:
-                        if not args.dry_run and q.get('opInc') != round(ov):
-                            q['opInc'] = round(ov)
-                        stats['op_set'] += 1; changed = True
-                    nv = match_fcf(q['d'], ni_m)
-                    if nv is not None:
-                        # Filed headline net income. Yahoo's quarterly
-                        # figure is attributable-to-common (a different
-                        # filed line under the same label — TSLA Q4'25:
-                        # $840M shown vs $901M headline).
-                        if not args.dry_run and (q.get('ni') != round(nv)
-                                                 or not q.get('niSec')):
-                            q['ni'] = round(nv); q['niSec'] = 1
-                        stats['ni_set'] += 1; changed = True
-                # Year-ago backfill: append the SEC-built year-ago quarter
-                # for each displayed quarter that lacks one, so every YoY
-                # column can compute from day one. Rows are keyed by end
-                # date; the table keeps the newest 8.
-                if qrows and not args.dry_run:
-                    have = {q['d'] for q in qrows}
-                    disp = sorted(qrows, key=lambda x: x['d'],
-                                  reverse=True)[:4]
-                    added = 0
-                    for dq in disp:
-                        tgt = year_ago(dq['d'])
-                        if any(abs((dparse(h) - dparse(tgt)).days) <= 10
-                               for h in have):
-                            continue
-                        end = near_key(tgt, rev_m) or near_key(tgt, ni_m) \
-                            or near_key(tgt, opinc_m)
-                        if not end:
-                            continue
-                        row = {'q': qlabel(end), 'd': end}
-                        if rev_m.get(end) is not None:
-                            row['rev'] = round(rev_m[end])
-                        if ni_m.get(end) is not None:
-                            row['ni'] = round(ni_m[end]); row['niSec'] = 1
-                        if 'rev' not in row and 'ni' not in row:
-                            continue
-                        if eps_g.get(end) is not None:
-                            row['eps'] = eps_g[end]; row['epsSec'] = 1
-                        if opinc_m.get(end) is not None:
-                            row['opInc'] = round(opinc_m[end])
-                        if fcf_q and fcf_q.get(end) is not None:
-                            row['fcf'] = round(fcf_q[end])
-                        qrows.append(row); have.add(end); added += 1
-                    if added:
-                        doc['q'] = sorted(qrows, key=lambda x: x['d'],
-                                          reverse=True)[:8]
-                        stats['bf_add'] += added; changed = True
             if entry:
                 registry[sym] = entry
             if changed and not args.dry_run:

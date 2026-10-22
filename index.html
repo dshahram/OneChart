@@ -650,7 +650,7 @@ document.querySelectorAll('[data-reinvest]').forEach(function(x){var a=(x.datase
 var bb=$('#benchmarkBtn');if(bb){bb.classList.toggle('active',benchmark);bb.setAttribute('aria-pressed',String(benchmark));bb.textContent=benchmark?'\u2212 S&P 500 benchmark':'+ S&P 500 benchmark'}
 var rt=document.querySelector('[data-sort="ret"]');if(rt)rt.textContent=reinvest?'Total return \u2193':'Price return \u2193';
 /* restored state above */
-renderWatchlists();render();
+renderWatchlists();if(selected.some(s=>!DATA[s]))setSelected(selected);else render();
 
 
 };

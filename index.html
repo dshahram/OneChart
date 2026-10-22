@@ -266,7 +266,8 @@ let realMode=false;const CPI_MAP={};(function(){const c=UNI.cpi||[];if(c.length)
 const inflFactor=function(t){var d=new Date(t*1000),y=d.getUTCFullYear(),m=d.getUTCMonth()+1;for(var k=0;k<24;k++){var ym=y+'-'+String(m).padStart(2,'0');if(CPI_MAP[ym])return CPI_MAP[ym];m--;if(m<1){m=12;y--}}return 1};
 const SYMCOUNT=Object.keys(UNI.tickers).length.toLocaleString('en-US');
 document.body.innerHTML=document.body.innerHTML.split('SYMCOUNT').join(SYMCOUNT);
-const ensureSyms=syms=>{const missing=[...new Set(syms)].filter(s=>s&&UNI.tickers[s]&&!DATA[s]);if(!missing.length)return Promise.resolve(missing);setStatus('Loading '+missing.join(', ')+'\u2026');return Promise.all(missing.map(s=>fetch('data/'+encodeURIComponent(s)+'.json').then(r=>{if(!r.ok)throw new Error(s);return r.json()}).then(v=>{DATA[s]=v;delete dailyCache[s+'|p'];delete dailyCache[s+'|r'];return s}).catch(()=>null))).then(loaded=>{const ok=loaded.filter(Boolean);if(ok.length)setStatus('');else setStatus('Could not load '+missing.join(', ')+'.',true);return ok})};
+const fetchSym=(s,attempt)=>fetch('data/'+encodeURIComponent(s)+'.json').then(r=>{if(!r.ok)throw new Error(s);return r.json()}).catch(e=>{if(attempt<2)return new Promise(res=>setTimeout(res,400*(attempt+1))).then(()=>fetchSym(s,attempt+1));throw e});
+const ensureSyms=syms=>{const missing=[...new Set(syms)].filter(s=>s&&UNI.tickers[s]&&!DATA[s]);if(!missing.length)return Promise.resolve(missing);setStatus('Loading '+missing.join(', ')+'\u2026');return Promise.all(missing.map(s=>fetchSym(s,0).then(v=>{DATA[s]=v;delete dailyCache[s+'|p'];delete dailyCache[s+'|r'];return s}).catch(()=>null))).then(loaded=>{const ok=loaded.filter(Boolean),failed=missing.filter(s=>!DATA[s]);if(!failed.length)setStatus('');else setStatus('Could not load '+failed.join(', ')+' \u2014 reload to retry.',true);return ok})};
 const setSelected=(syms,after)=>{const list=[...new Set(syms)].filter(s=>UNI.tickers[s]);ensureSyms(list).then(()=>{selected=list.filter(s=>DATA[s]);blends.forEach(b=>{if(b.parts.every(p=>DATA[p.sym]))buildBlendData(b)});renderBlends();if(after)after();else{resetView();render()}});};
 
 const SYMBOLS=Object.keys(UNI.tickers).sort((a,b)=>a.localeCompare(b));
@@ -286,9 +287,9 @@ const fmtDateFull=t=>new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric
 function fundAsOfLabel(){const d=(window.UNIVERSE&&window.UNIVERSE.fundamentals_asof)||'';if(!d)return'latest available';const p=d.split('-');return p.length===3?new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}).format(new Date(Date.UTC(+p[0],+p[1]-1,+p[2]))):d}
 const fmtTime=t=>new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}).format(new Date(t*1000))+' ET';
 const fmtInput=t=>new Date(t*1000).toISOString().slice(0,10);
-const fmtMoney=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const fmtMoney=n=>Number.isFinite(n)?'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'\u2014';
 const fmtSignedPlainMoney=n=>(n<0?'−$':'$')+Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-const fmtCompactMoney=n=>'$'+n.toLocaleString('en-US',{maximumFractionDigits:2});
+const fmtCompactMoney=n=>Number.isFinite(n)?'$'+n.toLocaleString('en-US',{maximumFractionDigits:2}):'\u2014';
 const fmtAxisMoney=n=>{const a=Math.abs(n);if(a<1e-12)return '$0';if(a>=1000000)return '$'+(n/1000000).toFixed(1)+'m';if(a>=1000){const k=n/1000;return '$'+k.toFixed(Number.isInteger(k)?0:1)+'k'}return '$'+n.toLocaleString('en-US',{minimumFractionDigits:a<10?2:0,maximumFractionDigits:a<10?2:a<100?1:0})};
 function niceDollarAxis(values,targetIntervals=6){
   const rawMin=Math.min(...values),rawMax=Math.max(...values);let span=rawMax-rawMin;
@@ -677,10 +678,15 @@ renderWatchlists();render();
     var wantBench=hashParam('bench')==='1';
     if(!wantBench){try{var sv=JSON.parse(localStorage.getItem('onechart-state')||'null');wantBench=!!(sv&&sv.benchmark)}catch(e){}}
     if(wantBench&&uni.tickers['^GSPC']&&syms.indexOf('^GSPC')<0)syms.push('^GSPC');
+    var failed=[];
+    function fetchSymBoot(s,attempt){
+      return fetch('data/'+encodeURIComponent(s)+'.json').then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(v){window.SYMDATA[s]=v}).catch(function(e){if(attempt<2)return new Promise(function(res){setTimeout(res,400*(attempt+1))}).then(function(){return fetchSymBoot(s,attempt+1)});failed.push(s);window._fetchErr=(window._fetchErr||'')+s+':'+(e&&e.message)+';';});
+    }
     return Promise.all(syms.map(function(s){
-      return fetch('data/'+encodeURIComponent(s)+'.json').then(function(r){return r.ok?r.json():null}).then(function(v){if(v)window.SYMDATA[s]=v}).catch(function(e){window._fetchErr=(window._fetchErr||'')+s+':'+(e&&e.message)+';';});
+      return fetchSymBoot(s,0);
     })).then(function(){
       if(el.parentNode)el.parentNode.removeChild(el);
+      if(failed.length){var b=document.createElement('div');b.style.cssText='position:fixed;top:0;left:0;right:0;background:#7f1d1d;color:#fff;font-family:system-ui,sans-serif;font-size:14px;padding:10px 16px;z-index:10000;text-align:center';b.textContent='Could not load data for: '+failed.join(', ')+' \u2014 reload to retry.';document.body.appendChild(b);}
       try {
         window.__initApp();
       } catch(e) {
